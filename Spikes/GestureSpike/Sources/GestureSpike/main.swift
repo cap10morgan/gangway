@@ -88,6 +88,7 @@ print("AXIsProcessTrusted (Accessibility): \(AXIsProcessTrusted())")
 print("CGPreflightListenEventAccess (Input Monitoring): \(CGPreflightListenEventAccess())")
 print("")
 
+let consumed: Set<UInt32> = [18, 19, 20, 22, 29, 30, 31, 32]
 nonisolated(unsafe) var seen: [UInt32: Int] = [:]
 nonisolated(unsafe) var recorded: [(UInt32, Data, Double)] = []
 let recordPath = "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
@@ -274,6 +275,92 @@ case "analyze":
     print("events with touches: \(touchTotalOrig)")
     print("  touch preserved  : \(touchSurvived)")
     print("  touch LOST       : \(touchLost)")
+
+case "primary":
+    // Simulates what the primary Mac must do: observe the full gesture stream AND
+    // swallow it locally, so the primary does not act on gestures it forwards.
+    //
+    // SAFETY: only scroll and gesture events are consumed. Keyboard, clicks and
+    // pointer motion pass through untouched, so the machine stays fully usable and
+    // you can always abort. The tap disables itself after the time limit.
+    let cb2: CGEventTapCallBack = { _, type, event, _ in
+        let raw = type.rawValue
+        if raw == UInt32.max || raw == UInt32.max - 1 { return Unmanaged.passUnretained(event) }
+        if consumed.contains(raw) {
+            seen[raw, default: 0] += 1
+            if let d = event.data as Data? {
+                recorded.append((raw, d, Date().timeIntervalSince1970))
+            }
+            return nil   // swallow locally
+        }
+        return Unmanaged.passUnretained(event)
+    }
+    guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
+                                      options: .defaultTap, eventsOfInterest: ~0,
+                                      callback: cb2, userInfo: nil) else {
+        print("TAP CREATION FAILED"); exit(1)
+    }
+    let src2 = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), src2, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
+    let dur = args.count > 2 ? Double(args[2]) ?? 12 : 12
+    print("""
+    >>> For the next \(Int(dur))s, scroll and gesture events are being SWALLOWED.
+    >>> Try: two-finger scroll, pinch, rotate, THREE-finger swipe left/right,
+    >>>      FOUR-finger swipe up (Mission Control).
+    >>> Nothing should visibly happen. Keyboard and clicking still work normally.
+    """)
+    CFRunLoopRunInMode(.defaultMode, dur, false)
+    CGEvent.tapEnable(tap: tap, enable: false)
+    print("\n>>> Tap disabled. Input back to normal.")
+    print("captured: " + seen.map { "\(typeName($0.key))=\($0.value)" }.sorted().joined(separator: " "))
+    var blob = Data()
+    for (t, d, ts) in recorded {
+        var type = t; var len = UInt32(d.count); var time = ts
+        blob.append(Data(bytes: &type, count: 4))
+        blob.append(Data(bytes: &len, count: 4))
+        blob.append(Data(bytes: &time, count: 8))
+        blob.append(d)
+    }
+    try? blob.write(to: URL(fileURLWithPath: recordPath))
+    print("wrote \(blob.count) bytes to \(recordPath)")
+    print("\nDID THE SCREEN REACT? If nothing scrolled/zoomed/switched Spaces,")
+    print("suppression works and the primary can forward without acting locally.")
+
+case "suppress":
+    // Can a consuming tap swallow input so the primary does not also act on what it
+    // forwards? Post synthetic mouse moves through a tap that returns nil and check
+    // whether the cursor actually moved.
+    let cb: CGEventTapCallBack = { _, type, event, _ in
+        seen[type.rawValue, default: 0] += 1
+        return nil   // consume: event must not reach the system
+    }
+    guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
+                                      options: .defaultTap, eventsOfInterest: ~0,
+                                      callback: cb, userInfo: nil) else {
+        print("TAP CREATION FAILED (consuming taps need Accessibility)"); exit(1)
+    }
+    let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
+
+    let origin = CGEvent(source: nil)?.location ?? .zero
+    print("cursor before: \(origin)")
+    let decoy = CGPoint(x: origin.x + 200, y: origin.y + 150)
+    for _ in 0..<5 {
+        if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                           mouseCursorPosition: decoy, mouseButton: .left) {
+            e.post(tap: .cghidEventTap)
+        }
+        CFRunLoopRunInMode(.defaultMode, 0.05, false)
+    }
+    CFRunLoopRunInMode(.defaultMode, 0.4, false)
+    let after = CGEvent(source: nil)?.location ?? .zero
+    print("cursor after : \(after)  (decoy target was \(decoy))")
+    print("tap saw: \(seen.map { "\(typeName($0.key))=\($0.value)" }.sorted().joined(separator: " "))")
+    let moved = abs(after.x - origin.x) > 1 || abs(after.y - origin.y) > 1
+    print(moved ? "RESULT: events NOT suppressed (cursor moved)"
+                : "RESULT: SUPPRESSION WORKS - tap saw the events, system did not")
 
 default:
     print("usage: GestureSpike [observe|record|replay|selftest] [seconds]")
