@@ -137,28 +137,41 @@ public struct RemoteCursor: Sendable, Equatable {
         case exited(ScreenEdge, NormalizedPoint)
     }
 
+    /// How far past an edge the pointer must travel before control leaves the peer,
+    /// in peer pixels.
+    ///
+    /// Without this the cursor enters at exactly 0.0 or 1.0 and the first pixel of
+    /// jitter in the opposite direction throws control straight back, so control
+    /// oscillates between the two Macs and the primary's cursor appears to keep
+    /// moving. The pointer instead sticks to the edge until pushed past the margin,
+    /// which is also how a real multi-monitor edge behaves.
+    public static let exitMarginPixels: Double = 12
+
     public mutating func apply(deltaX: Double, deltaY: Double) -> Motion {
         guard peerBounds.width > 0, peerBounds.height > 0 else {
             return .moved(position)
         }
         let nextX = position.x + deltaX / peerBounds.width
         let nextY = position.y + deltaY / peerBounds.height
+        let marginX = Self.exitMarginPixels / peerBounds.width
+        let marginY = Self.exitMarginPixels / peerBounds.height
 
         // Check horizontal exit before vertical so a diagonal overshoot resolves
         // deterministically rather than depending on evaluation order.
-        if nextX < 0 {
+        if nextX < -marginX {
             return .exited(.left, NormalizedPoint(x: 0, y: min(max(nextY, 0), 1)))
         }
-        if nextX > 1 {
+        if nextX > 1 + marginX {
             return .exited(.right, NormalizedPoint(x: 1, y: min(max(nextY, 0), 1)))
         }
-        if nextY < 0 {
+        if nextY < -marginY {
             return .exited(.top, NormalizedPoint(x: min(max(nextX, 0), 1), y: 0))
         }
-        if nextY > 1 {
+        if nextY > 1 + marginY {
             return .exited(.bottom, NormalizedPoint(x: min(max(nextX, 0), 1), y: 1))
         }
-        position = NormalizedPoint(x: nextX, y: nextY)
+        // Within the margin the pointer pins to the edge rather than drifting off it.
+        position = NormalizedPoint(x: nextX, y: nextY).clamped()
         return .moved(position)
     }
 }

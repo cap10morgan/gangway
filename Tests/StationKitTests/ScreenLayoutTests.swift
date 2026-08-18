@@ -89,7 +89,9 @@ final class RemoteCursorTests: XCTestCase {
 
     func testExitsBackAcrossEntryEdge() {
         var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
-        guard case .exited(let edge, let at) = cursor.apply(deltaX: -10, deltaY: 0) else {
+        // Must clear the hysteresis margin; a smaller nudge intentionally does nothing.
+        let push = -(RemoteCursor.exitMarginPixels + 5)
+        guard case .exited(let edge, let at) = cursor.apply(deltaX: push, deltaY: 0) else {
             return XCTFail("expected an exit")
         }
         XCTAssertEqual(edge, .left)
@@ -124,6 +126,39 @@ final class RemoteCursorTests: XCTestCase {
         }
         XCTAssertEqual(sp.x, 0.1, accuracy: 0.0001)
         XCTAssertEqual(lp.x, 0.05, accuracy: 0.0001)
+    }
+
+    /// Regression: entering at exactly 0.0 and jittering backwards must NOT hand
+    /// control straight back. Without a margin, control oscillates between the two
+    /// Macs and the primary's cursor appears to keep moving on its own.
+    func testJitterAtEntryEdgeDoesNotExit() {
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+        for _ in 0..<20 {
+            guard case .moved = cursor.apply(deltaX: -1, deltaY: 0) else {
+                return XCTFail("a single pixel of jitter must not end remote control")
+            }
+        }
+        XCTAssertEqual(cursor.position.x, 0, "pointer should pin to the edge")
+    }
+
+    /// A deliberate push past the margin still exits.
+    func testPushPastMarginExits() {
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+        let push = -(RemoteCursor.exitMarginPixels + 2)
+        guard case .exited(let edge, _) = cursor.apply(deltaX: push, deltaY: 0) else {
+            return XCTFail("expected an exit once past the margin")
+        }
+        XCTAssertEqual(edge, .left)
+    }
+
+    /// The margin is in peer pixels, so it must not become huge on a small display.
+    func testMarginIsPixelBasedNotProportional() {
+        var small = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5),
+                                 peerBounds: Rect(x: 0, y: 0, width: 800, height: 600))
+        let push = -(RemoteCursor.exitMarginPixels + 2)
+        guard case .exited = small.apply(deltaX: push, deltaY: 0) else {
+            return XCTFail("same pixel push must exit on a small display too")
+        }
     }
 
     /// A diagonal overshoot must resolve deterministically rather than depending on

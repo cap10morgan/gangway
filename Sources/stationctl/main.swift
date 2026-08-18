@@ -246,6 +246,28 @@ case "probe":
     DispatchQueue.global().asyncAfter(deadline: .now() + 10) { log("probe", "TIMED OUT"); exit(1) }
     dispatchMain()
 
+case "cursor-selftest":
+    // Verifies that a hidden cursor is restored on exit. A leaked hide leaves the user
+    // with no pointer, so this path is worth being able to check on demand.
+    let mode = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "exit"
+    CursorControl.installSafetyNet()
+    log("cursor", "background hiding available: \(CursorControl.canHideInBackground)")
+    CursorControl.hide()
+    log("cursor", "hidden; mode=\(mode)")
+    switch mode {
+    case "exit":
+        // Normal termination: atexit must unhide.
+        log("cursor", "exiting normally in 2s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { exit(0) }
+    case "signal":
+        // Wait to be signalled; the DispatchSource handler must unhide.
+        log("cursor", "waiting for SIGTERM")
+    default:
+        log("cursor", "unknown mode")
+        exit(2)
+    }
+    CFRunLoopRun()
+
 default:
     print("""
     stationctl — Station command-line driver
@@ -259,5 +281,8 @@ default:
 
       stationctl probe
           Loopback transport self-test.
+
+      stationctl cursor-selftest [exit|signal]
+          Hide the cursor, then verify it is restored on that exit path.
     """)
 }

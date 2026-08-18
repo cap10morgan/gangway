@@ -76,6 +76,8 @@ public final class EventCapture: @unchecked Sendable {
 
     public func start() throws {
         guard tap == nil else { return }
+        // Guarantee the cursor is restored on any exit path we can intercept.
+        CursorControl.installSafetyNet()
         let context = Unmanaged.passUnretained(self).toOpaque()
 
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -180,9 +182,22 @@ public final class EventCapture: @unchecked Sendable {
         onEnterPeer?(crossing.peer, crossing.entry)
     }
 
+    /// Event types that carry pointer motion, and so can drag the primary's cursor
+    /// off its parked position if anything slips through.
+    private static let pointerMovingTypes: Set<UInt32> = [5, 6, 7, 27]
+
     private func forward(_ event: CGEvent, type: CGEventType, to peer: UUID) {
         let deltaX = Double(event.getIntegerValueField(.mouseEventDeltaX))
         let deltaY = Double(event.getIntegerValueField(.mouseEventDeltaY))
+
+        // Pin the local cursor. Disabling the mouse/cursor association is supposed to
+        // be enough, but in practice the cursor still creeps: the association does not
+        // reliably hold for a background process, and any event that slips through
+        // while the tap is briefly disabled moves it. Warping back to the parked point
+        // is cheap, generates no events, and makes the behaviour deterministic.
+        if Self.pointerMovingTypes.contains(type.rawValue), event.location != parkedCursor {
+            CGWarpMouseCursorPosition(parkedCursor)
+        }
 
         // Track where the pointer is on the peer, and notice when it runs off.
         if deltaX != 0 || deltaY != 0, var cursor = remoteCursor {
@@ -214,11 +229,11 @@ public final class EventCapture: @unchecked Sendable {
     /// for relative mouse look.
     private func captureCursor() {
         CGAssociateMouseAndMouseCursorPosition(0)
-        CGDisplayHideCursor(CGMainDisplayID())
+        CursorControl.hide()
     }
 
     private func releaseCursor() {
-        CGDisplayShowCursor(CGMainDisplayID())
+        CursorControl.show()
         CGAssociateMouseAndMouseCursorPosition(1)
         if parkedCursor != .zero {
             CGWarpMouseCursorPosition(parkedCursor)
