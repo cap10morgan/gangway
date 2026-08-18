@@ -5,7 +5,7 @@ import CoreGraphics
 final class EdgeDetectorTests: XCTestCase {
 
     private let laptop = Rect(x: 0, y: 0, width: 1440, height: 900)
-    private let peerID = UUID()
+    private let peerID: DeviceID = "peer-1"
 
     private func detector(_ edge: ScreenEdge) -> EdgeDetector {
         EdgeDetector(bounds: laptop, layout: Layout(placements: [edge: peerID]))
@@ -236,10 +236,10 @@ final class NormalizedPointTests: XCTestCase {
     }
 
     func testLayoutFindsEdgeOfPeer() {
-        let peer = UUID()
+        let peer: DeviceID = "peer-1"
         let layout = Layout(placements: [.right: peer])
         XCTAssertEqual(layout.edge(of: peer), .right)
-        XCTAssertNil(layout.edge(of: UUID()))
+        XCTAssertNil(layout.edge(of: "someone-else"))
     }
 }
 

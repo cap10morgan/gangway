@@ -20,7 +20,7 @@ public final class EventCapture: @unchecked Sendable {
 
     public enum Mode: Equatable, Sendable {
         case local
-        case forwarding(peer: UUID)
+        case forwarding(peer: DeviceID)
     }
 
     /// Every event type we forward. Deliberately *not* a filtered subset: gesture
@@ -33,27 +33,27 @@ public final class EventCapture: @unchecked Sendable {
     /// Raw event ready to send. The `Data` is an opaque `CGEvent` serialization.
     public var onEvent: (@Sendable (InputEvent) -> Void)?
     /// Control just moved to a peer; the peer should place its cursor at this point.
-    public var onEnterPeer: (@Sendable (UUID, NormalizedPoint) -> Void)?
+    public var onEnterPeer: (@Sendable (DeviceID, NormalizedPoint) -> Void)?
     /// Control came back to this Mac.
     public var onReturnLocal: (@Sendable (ScreenEdge, NormalizedPoint) -> Void)?
     public var onTapDisabled: (@Sendable () -> Void)?
 
     public var layout: Layout
     private var localBounds: Rect
-    private var peerBounds: [UUID: Rect]
+    private var peerBounds: [DeviceID: Rect]
     private var remoteCursor: RemoteCursor?
     private var parkedCursor: CGPoint = .zero
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
-    public init(layout: Layout = Layout(), peerBounds: [UUID: Rect] = [:]) {
+    public init(layout: Layout = Layout(), peerBounds: [DeviceID: Rect] = [:]) {
         self.layout = layout
         self.peerBounds = peerBounds
         self.localBounds = ScreenGeometry.globalBounds
     }
 
-    public func setPeerBounds(_ bounds: Rect, for peer: UUID) {
+    public func setPeerBounds(_ bounds: Rect, for peer: DeviceID) {
         peerBounds[peer] = bounds
     }
 
@@ -189,7 +189,7 @@ public final class EventCapture: @unchecked Sendable {
     /// off its parked position if anything slips through.
     private static let pointerMovingTypes: Set<UInt32> = [5, 6, 7, 27]
 
-    private func forward(_ event: CGEvent, type: CGEventType, to peer: UUID) {
+    private func forward(_ event: CGEvent, type: CGEventType, to peer: DeviceID) {
         let deltaX = Double(event.getIntegerValueField(.mouseEventDeltaX))
         let deltaY = Double(event.getIntegerValueField(.mouseEventDeltaY))
 

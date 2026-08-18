@@ -17,11 +17,11 @@ public enum ScreenEdge: String, Codable, Sendable, CaseIterable {
 
 /// Where each peer sits relative to this Mac.
 public struct Layout: Codable, Sendable, Equatable {
-    public var placements: [ScreenEdge: UUID]
-    public init(placements: [ScreenEdge: UUID] = [:]) { self.placements = placements }
+    public var placements: [ScreenEdge: DeviceID]
+    public init(placements: [ScreenEdge: DeviceID] = [:]) { self.placements = placements }
 
-    public func peer(at edge: ScreenEdge) -> UUID? { placements[edge] }
-    public func edge(of peer: UUID) -> ScreenEdge? {
+    public func peer(at edge: ScreenEdge) -> DeviceID? { placements[edge] }
+    public func edge(of peer: DeviceID) -> ScreenEdge? {
         placements.first { $0.value == peer }?.key
     }
 }
@@ -88,7 +88,7 @@ public struct EdgeDetector: Sendable {
     }
 
     public struct Crossing: Sendable, Equatable {
-        public let peer: UUID
+        public let peer: DeviceID
         public let edge: ScreenEdge
         /// Where the cursor should appear on the peer, in the peer's normalized space.
         public let entry: NormalizedPoint

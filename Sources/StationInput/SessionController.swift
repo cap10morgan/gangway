@@ -43,7 +43,7 @@ public final class SessionController: @unchecked Sendable {
     private var link: StationLink?
     private var capture: EventCapture?
     private let injection = EventInjection()
-    private var peerID = UUID()
+    private var peerID: DeviceID = ""
     private let clipboard = ClipboardMonitor()
     private var clipboardAssembler = ClipboardAssembler()
     private var clipboardTransferID: UInt64 = 0
@@ -62,6 +62,13 @@ public final class SessionController: @unchecked Sendable {
     }
 
     public var publicIdentity: Data { identity.publicKeyData }
+
+    /// Hex of a public key, the form used to identify a Mac in an arrangement.
+    public static func hex(_ data: Data) -> DeviceID {
+        data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    public var localDeviceID: DeviceID { Self.hex(identity.publicKeyData) }
 
     // MARK: - Clipboard
 
@@ -208,8 +215,10 @@ public final class SessionController: @unchecked Sendable {
     public func startSending(endpoint: NWEndpoint, edge: ScreenEdge,
                              expectedPeerIdentity: Data? = nil) {
         stop()
-        peerID = UUID()
         pendingEdge = edge
+        // Identify the peer by whatever identity it proves during the handshake; until
+        // then, a placeholder that the capture layer keys its bounds against.
+        peerID = expectedPeerIdentity.map(Self.hex) ?? "pending-peer"
         let capture = EventCapture(layout: Layout(placements: [edge: peerID]))
         self.capture = capture
 
