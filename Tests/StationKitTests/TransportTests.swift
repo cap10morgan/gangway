@@ -114,6 +114,54 @@ final class TransportTests: XCTestCase {
         XCTAssertFalse(delivered, "an unconfirmed peer must not be able to inject input")
     }
 
+    /// Regression: each Mac confirms independently, so whichever confirms first sends
+    /// immediately while the other is still waiting on its user. Those messages must be
+    /// held and delivered on confirmation, not dropped. Dropping them loses the peer's
+    /// hello, which drives the screen-geometry exchange, and the session stalls at
+    /// "waiting for another Mac to connect" with no error shown.
+    func testMessagesSentBeforeConfirmationArriveAfterIt() throws {
+        let serverIdentity = Identity.generate()
+        nonisolated(unsafe) var serverLink: StationLink?
+        nonisolated(unsafe) var deliveredPayload: Data?
+        let sawConfirmation = expectation(description: "server reached confirmation")
+        let delivered = expectation(description: "held message delivered")
+
+        let listener = StationListener(deviceName: "test-secondary", identity: serverIdentity)
+        listener.onLink = { link in
+            serverLink = link
+            link.onPhase = { if case .awaitingConfirmation = $0 { sawConfirmation.fulfill() } }
+            link.onMessage = { type, payload in
+                guard type == .hello else { return }
+                deliveredPayload = payload
+                delivered.fulfill()
+            }
+        }
+        try listener.start(port: .any, advertise: false)
+        defer { listener.stop(); serverLink?.cancel() }
+
+        let port = try waitForPort(listener)
+        let client = StationLink(endpoint: .hostPort(host: "127.0.0.1", port: port),
+                                 identity: .generate())
+        let clientReady = expectation(description: "client ready")
+        client.onPhase = { phase in
+            if case .awaitingConfirmation = phase { client.confirmPairing() }
+            if phase == .ready { clientReady.fulfill() }
+        }
+        client.start()
+        defer { client.cancel() }
+
+        wait(for: [clientReady, sawConfirmation], timeout: 10)
+
+        // Client confirmed and sends straight away; the server has not confirmed yet.
+        client.send(.hello, Data("early".utf8))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertNil(deliveredPayload, "must not be delivered before confirmation")
+
+        serverLink?.confirmPairing()
+        wait(for: [delivered], timeout: 5)
+        XCTAssertEqual(deliveredPayload, Data("early".utf8))
+    }
+
     /// A peer presenting an identity other than the pinned one must be refused, which is
     /// what an impersonating machine looks like.
     func testPinnedIdentityMismatchIsRefused() throws {

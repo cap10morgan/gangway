@@ -96,6 +96,17 @@ public final class StationLink: @unchecked Sendable {
     public static let unreachableTimeout: TimeInterval = 8
     /// App messages queued while the handshake or user confirmation is outstanding.
     private var pendingOutbound: [(MessageType, Data)] = []
+    /// Decrypted messages that arrived before this side confirmed the pairing.
+    ///
+    /// Held rather than discarded. Each Mac confirms independently, so whichever
+    /// confirms first sends immediately while the other is still waiting on its user.
+    /// Dropping those messages loses the peer's `hello`, which is what triggers the
+    /// screen-geometry exchange, and the session stalls with no visible error.
+    private var pendingInbound: [(MessageType, Data)] = []
+
+    /// Enough for the handshake's opening exchange, but bounded: an unconfirmed peer
+    /// must not be able to make us buffer without limit.
+    private static let maxPendingInbound = 32
 
     public var onMessage: (@Sendable (MessageType, Data) -> Void)?
     public var onPhase: (@Sendable (LinkPhase) -> Void)?
@@ -215,11 +226,17 @@ public final class StationLink: @unchecked Sendable {
     public func confirmPairing() {
         lock.lock()
         confirmed = true
-        let queued = pendingOutbound
+        let outbound = pendingOutbound
+        let inbound = pendingInbound
         pendingOutbound.removeAll()
+        pendingInbound.removeAll()
         lock.unlock()
+
         onPhase?(.ready)
-        for (type, payload) in queued { send(type, payload) }
+        // Inbound first: the peer's `hello` has to be seen before we answer it, and
+        // ordering the other way would answer a message we have not processed yet.
+        for (type, payload) in inbound { onMessage?(type, payload) }
+        for (type, payload) in outbound { send(type, payload) }
     }
 
     // MARK: - Sending
@@ -339,21 +356,28 @@ public final class StationLink: @unchecked Sendable {
                 // Always decrypt, to keep the cipher's sequence counter in step.
                 let inner = try cipher.open(payload)
 
-                // But deliver nothing until the user has confirmed the SAS. The keys
-                // exist as soon as the handshake completes, so without this an
-                // unconfirmed peer could inject input before the user has had any
-                // chance to check the digits, which is exactly what the confirmation
-                // step is there to prevent.
+                var innerDecoder = FrameDecoder()
+                innerDecoder.append(inner)
+                var frames: [(MessageType, Data)] = []
+                while let frame = try innerDecoder.next() {
+                    frames.append((frame.type, frame.payload))
+                }
+
+                // Deliver nothing until the user has confirmed the SAS. Keys exist as
+                // soon as the handshake completes, so without this an unconfirmed peer
+                // could inject input before the user has checked the digits, which is
+                // what the confirmation step exists to prevent. Messages are held, not
+                // dropped, so nothing is lost when the peer confirms first.
                 lock.lock()
                 let mayDeliver = confirmed
+                if !mayDeliver {
+                    let room = Self.maxPendingInbound - pendingInbound.count
+                    if room > 0 { pendingInbound.append(contentsOf: frames.prefix(room)) }
+                }
                 lock.unlock()
                 guard mayDeliver else { return }
 
-                var innerDecoder = FrameDecoder()
-                innerDecoder.append(inner)
-                while let frame = try innerDecoder.next() {
-                    onMessage?(frame.type, frame.payload)
-                }
+                for (type, payload) in frames { onMessage?(type, payload) }
             } catch {
                 // A frame that fails authentication means tampering or desync; the
                 // connection cannot be trusted to carry input after that.
