@@ -183,6 +183,28 @@ case "connect":
     DispatchQueue.global().asyncAfter(deadline: .now() + 10) { log("connect", "TIMED OUT"); exit(1) }
     dispatchMain()
 
+case "peers":
+    let peers = PairingStore.peers()
+    if peers.isEmpty {
+        log("peers", "no paired Macs stored")
+    } else {
+        for p in peers {
+            log("peers", "\(p.name) fingerprint=\(p.fingerprint) edge=\(p.edge.rawValue) paired=\(p.pairedAt)")
+        }
+    }
+    exit(0)
+
+case "forget":
+    // A pinned identity that no longer matches is rejected outright, which is correct
+    // but unhelpful if the stored entry is simply stale from an abandoned pairing.
+    let peers = PairingStore.peers()
+    for p in peers {
+        PairingStore.remove(publicKey: p.publicKey)
+        log("forget", "removed \(p.name) (\(p.fingerprint))")
+    }
+    log("forget", "\(peers.count) pairing(s) cleared; next connection will pair afresh")
+    exit(0)
+
 case "discover":
     let browser = PeerBrowser()
     browser.onPeersChanged = { peers in
@@ -277,6 +299,12 @@ default:
 
       stationctl connect --host <ip> --port <port>
           Handshake against a secondary without capturing input. Safe on one Mac.
+
+      stationctl peers
+          List paired Macs and their identity fingerprints.
+
+      stationctl forget
+          Forget all paired Macs so the next connection pairs afresh.
 
       stationctl discover
           Browse for Station peers and report what resolved.
