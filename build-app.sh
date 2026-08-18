@@ -43,6 +43,11 @@ codesign --verify --verbose=2 "$APP" 2>&1 | sed 's/^/    /'
 echo
 echo "Built $APP"
 echo
+echo "IMPORTANT: launch it with  open $APP"
+echo "Running the binary directly from a terminal makes it inherit the terminal's"
+echo "TCC grants, so it will believe it already has permission, never register with"
+echo "the system, and never appear in System Settings."
+echo
 if [ "$IDENTITY" = "-" ]; then
     echo "Ad-hoc signed. Note that macOS ties Accessibility and Input Monitoring grants"
     echo "to the code signature, so re-signing or rebuilding may require re-granting"

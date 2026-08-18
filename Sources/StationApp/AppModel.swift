@@ -36,9 +36,41 @@ final class AppModel {
     private let deviceName = Host.current().localizedName ?? "Mac"
     private let deviceID = AppModel.persistentDeviceID()
 
+    private var permissionTimer: Timer?
+
     init() {
         browser.onPeersChanged = { [weak self] peers in
             Task { @MainActor in self?.peers = peers.filter { $0.isCompatible } }
+        }
+        registerWithTCCIfNeeded()
+        startPermissionPolling()
+    }
+
+    /// Ask for both permissions at launch when they are missing.
+    ///
+    /// This is what puts Station in the System Settings lists. An app appears under
+    /// Input Monitoring only once it has *called* the request API; merely preflighting
+    /// does not register it. Waiting for the user to press a button in our own UI meant
+    /// that a user who went straight to System Settings found no Station entry at all.
+    ///
+    /// macOS shows each prompt at most once per signature, so this is not repeated
+    /// nagging: on later launches the calls are silent no-ops.
+    private func registerWithTCCIfNeeded() {
+        let current = Permissions.current()
+        if !current.inputMonitoring { Permissions.requestInputMonitoring() }
+        if !current.accessibility { Permissions.requestAccessibility() }
+        permissions = Permissions.current()
+    }
+
+    /// Grants are made in System Settings, in another process, with no notification
+    /// back to us. Poll so the UI updates on its own instead of needing "Check again".
+    private func startPermissionPolling() {
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let latest = Permissions.current()
+                if latest != self.permissions { self.permissions = latest }
+            }
         }
     }
 
