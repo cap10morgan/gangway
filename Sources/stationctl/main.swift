@@ -244,30 +244,62 @@ case "edge-test":
     exit(0)
 
 case "dock-test":
-    // Do synthetic mouse events reveal an auto-hidden Dock at all? Run this ON the
-    // secondary, with no Station session, and watch. It separates "macOS ignores
-    // injected events for edge behaviours" from "Station's injection is at fault".
+    // Synthetic CGEventPost moves the logical cursor but does not reveal an auto-hidden
+    // Dock. Other APIs move the pointer at different layers, so try each in turn and
+    // see which, if any, macOS honours for edge-triggered behaviour.
     let display = CGDisplayBounds(CGMainDisplayID())
-    log("dock", "display \(display)")
-    log("dock", "moving to the bottom edge in 2s — watch for the Dock")
-    sleep(2)
     let x = display.midX
+    let home = CGPoint(x: x, y: display.midY)
+    let edge = CGPoint(x: x, y: display.maxY)
+
+    func rest() {
+        CGWarpMouseCursorPosition(home)
+        usleep(900_000)
+    }
+
+    log("dock", "display \(display) — watch the bottom of the screen")
+    print("")
+
+    rest()
+    log("dock", "[1/3] posted mouseMoved events ...")
     for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
         CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                 mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left)?
             .post(tap: .cghidEventTap)
         usleep(12_000)
     }
-    // Hold at the edge, nudging as a hand resting against it would.
-    for _ in 0..<40 {
-        let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                        mouseCursorPosition: CGPoint(x: x, y: display.maxY), mouseButton: .left)
-        e?.setIntegerValueField(.mouseEventDeltaY, value: 2)
-        e?.post(tap: .cghidEventTap)
+    for _ in 0..<30 {
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                mouseCursorPosition: edge, mouseButton: .left)?.post(tap: .cghidEventTap)
         usleep(50_000)
     }
-    log("dock", "held at the bottom edge for 2s; cursor now \(ScreenGeometry.currentCursor)")
-    log("dock", "did the Dock appear?")
+    sleep(1)
+
+    rest()
+    log("dock", "[2/3] CGWarpMouseCursorPosition ...")
+    for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
+        CGWarpMouseCursorPosition(CGPoint(x: x, y: y))
+        usleep(12_000)
+    }
+    for _ in 0..<30 { CGWarpMouseCursorPosition(edge); usleep(50_000) }
+    sleep(1)
+
+    rest()
+    log("dock", "[3/3] CGDisplayMoveCursorToPoint ...")
+    // Display-relative, so the point must be in display coordinates.
+    for y in stride(from: display.height - 250, through: display.height - 1, by: 6) {
+        CGDisplayMoveCursorToPoint(CGMainDisplayID(), CGPoint(x: x, y: y))
+        usleep(12_000)
+    }
+    for _ in 0..<30 {
+        CGDisplayMoveCursorToPoint(CGMainDisplayID(), CGPoint(x: x, y: display.height - 1))
+        usleep(50_000)
+    }
+    sleep(1)
+    rest()
+
+    print("")
+    log("dock", "which step, if any, revealed the Dock? (1 posted, 2 warp, 3 display-move)")
     exit(0)
 
 case "discover":
