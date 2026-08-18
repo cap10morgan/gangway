@@ -209,6 +209,14 @@ struct ReceivingSection: View {
                 Text("Waiting for another Mac to connect…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let port = model.listeningPort {
+                    // Surfaced so a stuck pairing can be tested directly, which
+                    // separates a discovery problem from a connection problem.
+                    Text("Listening on port \(String(port))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
             }
         }
         .padding(12)

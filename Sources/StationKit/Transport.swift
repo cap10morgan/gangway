@@ -53,6 +53,16 @@ public final class StationLink: @unchecked Sendable {
     private var confirmed = false
     /// Set once a terminal phase has been reported, so consumers see it exactly once.
     private var finished = false
+    /// True once the handshake begins, i.e. the connection genuinely reached the peer.
+    private var reachedPeer = false
+    /// Most recent reason Network.framework gave for retrying.
+    private var lastWaitingReason: String?
+
+    /// How long to sit in `.waiting` before telling the user something is wrong.
+    /// Network.framework retries a blocked or unreachable endpoint indefinitely and
+    /// reports only `.waiting`, so without this the UI shows "Connecting…" forever and
+    /// the actual reason never surfaces.
+    public static let unreachableTimeout: TimeInterval = 8
     /// App messages queued while the handshake or user confirmation is outstanding.
     private var pendingOutbound: [(MessageType, Data)] = []
 
@@ -97,6 +107,9 @@ public final class StationLink: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
+                self.lock.lock()
+                self.reachedPeer = true
+                self.lock.unlock()
                 self.onPhase?(.handshaking)
                 self.receiveLoop()
                 // The initiator opens the handshake; the responder answers.
@@ -104,6 +117,9 @@ public final class StationLink: @unchecked Sendable {
                     self.sendRaw(.hsEphemeral, self.handshake.ephemeralMessage())
                 }
             case .waiting(let error):
+                self.lock.lock()
+                self.lastWaitingReason = Self.describe(error)
+                self.lock.unlock()
                 self.onError?(error)
                 self.onPhase?(.connecting)
             case .failed(let error):
@@ -117,6 +133,38 @@ public final class StationLink: @unchecked Sendable {
             }
         }
         connection.start(queue: queue)
+
+        // Give up reporting silence after a while and say what went wrong.
+        queue.asyncAfter(deadline: .now() + Self.unreachableTimeout) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let arrived = self.reachedPeer
+            let reason = self.lastWaitingReason
+            self.lock.unlock()
+            guard !arrived else { return }
+            self.finish(.failed(Self.unreachableMessage(reason)))
+            self.connection.cancel()
+        }
+    }
+
+    private static func describe(_ error: NWError) -> String {
+        switch error {
+        case .posix(let code):  return "\(code)"
+        case .dns(let code):    return "DNS error \(code)"
+        case .tls(let status):  return "TLS error \(status)"
+        @unknown default:       return error.localizedDescription
+        }
+    }
+
+    /// Local Network permission is by far the most common cause on macOS 15 and later,
+    /// and it fails silently: the connection simply never completes.
+    private static func unreachableMessage(_ reason: String?) -> String {
+        var message = "Could not reach the other Mac"
+        if let reason { message += " (\(reason))" }
+        message += ". Check that Station is running and set to receive there, that both "
+        message += "Macs are on the same network, and that Station is allowed under "
+        message += "System Settings > Privacy & Security > Local Network on this Mac."
+        return message
     }
 
     public func cancel() {

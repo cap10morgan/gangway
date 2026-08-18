@@ -26,6 +26,9 @@ final class AppModel {
     var confirmationCode: String?
 
     var connectedPeer: String?
+    /// Shown while receiving so the connection can be tested directly with
+    /// `stationctl connect` when discovery is the thing that is broken.
+    var listeningPort: UInt16?
     var controlIsRemote = false
     var statusMessage = "Not running"
     var lastError: String?
@@ -151,6 +154,7 @@ final class AppModel {
         connectedPeer = nil
         controlIsRemote = false
         confirmationCode = nil
+        listeningPort = nil
         statusMessage = "Not running"
     }
 
@@ -191,7 +195,8 @@ final class AppModel {
 
     private func apply(_ event: SessionController.Event) {
         switch event {
-        case .listening:
+        case .listening(let port):
+            listeningPort = port
             statusMessage = "Waiting for a Mac to connect"
         case .needsConfirmation(let sas):
             confirmationCode = sas
