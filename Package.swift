@@ -9,6 +9,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "StationKit"),
+        .executableTarget(name: "stationctl", dependencies: ["StationKit"]),
         .testTarget(name: "StationKitTests", dependencies: ["StationKit"]),
     ]
 )
