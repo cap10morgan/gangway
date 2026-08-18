@@ -176,7 +176,10 @@ public final class EventCapture: @unchecked Sendable {
         guard let bounds = peerBounds[crossing.peer] else { return }
 
         parkedCursor = event.location
-        remoteCursor = RemoteCursor(entry: crossing.entry, peerBounds: bounds)
+        // Leaving this Mac by its right edge means arriving on the peer's left, so the
+        // peer's left edge is the one that leads back here.
+        remoteCursor = RemoteCursor(entry: crossing.entry, peerBounds: bounds,
+                                    returnEdge: crossing.edge.opposite)
         mode = .forwarding(peer: crossing.peer)
         captureCursor()
         onEnterPeer?(crossing.peer, crossing.entry)

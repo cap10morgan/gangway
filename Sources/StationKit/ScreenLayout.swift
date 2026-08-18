@@ -125,9 +125,20 @@ public struct RemoteCursor: Sendable, Equatable {
     public private(set) var position: NormalizedPoint
     public var peerBounds: Rect
 
-    public init(entry: NormalizedPoint, peerBounds: Rect) {
+    /// The only edge that hands control back. Every other edge is a wall.
+    ///
+    /// Without this, shoving the pointer at the bottom of the peer's screen overshoots
+    /// the bottom margin, counts as leaving, and snaps control back to the primary —
+    /// from an edge that leads nowhere. Slow movement stayed inside the margin and
+    /// behaved, which made it look like a speed-dependent glitch rather than a missing
+    /// rule. It also prevented the pointer from resting against the bottom edge long
+    /// enough for an auto-hidden Dock to reveal.
+    public var returnEdge: ScreenEdge
+
+    public init(entry: NormalizedPoint, peerBounds: Rect, returnEdge: ScreenEdge) {
         self.position = entry.clamped()
         self.peerBounds = peerBounds
+        self.returnEdge = returnEdge
     }
 
     /// Result of applying motion: either the cursor stays, or it leaves the peer.
@@ -156,18 +167,19 @@ public struct RemoteCursor: Sendable, Equatable {
         let marginX = Self.exitMarginPixels / peerBounds.width
         let marginY = Self.exitMarginPixels / peerBounds.height
 
-        // Check horizontal exit before vertical so a diagonal overshoot resolves
-        // deterministically rather than depending on evaluation order.
-        if nextX < -marginX {
+        // Check horizontal before vertical so a diagonal overshoot resolves
+        // deterministically rather than depending on evaluation order. Only an
+        // overshoot on `returnEdge` counts; the rest clamp.
+        if nextX < -marginX, returnEdge == .left {
             return .exited(.left, NormalizedPoint(x: 0, y: min(max(nextY, 0), 1)))
         }
-        if nextX > 1 + marginX {
+        if nextX > 1 + marginX, returnEdge == .right {
             return .exited(.right, NormalizedPoint(x: 1, y: min(max(nextY, 0), 1)))
         }
-        if nextY < -marginY {
+        if nextY < -marginY, returnEdge == .top {
             return .exited(.top, NormalizedPoint(x: min(max(nextX, 0), 1), y: 0))
         }
-        if nextY > 1 + marginY {
+        if nextY > 1 + marginY, returnEdge == .bottom {
             return .exited(.bottom, NormalizedPoint(x: min(max(nextX, 0), 1), y: 1))
         }
         // Within the margin the pointer pins to the edge rather than drifting off it.

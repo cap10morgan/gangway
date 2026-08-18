@@ -79,7 +79,7 @@ final class RemoteCursorTests: XCTestCase {
     private let peer = Rect(x: 0, y: 0, width: 2560, height: 1440)
 
     func testMotionMovesWithinPeer() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer, returnEdge: .left)
         guard case .moved(let p) = cursor.apply(deltaX: 256, deltaY: 0) else {
             return XCTFail("expected movement, not an exit")
         }
@@ -88,7 +88,7 @@ final class RemoteCursorTests: XCTestCase {
     }
 
     func testExitsBackAcrossEntryEdge() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer, returnEdge: .left)
         // Must clear the hysteresis margin; a smaller nudge intentionally does nothing.
         let push = -(RemoteCursor.exitMarginPixels + 5)
         guard case .exited(let edge, let at) = cursor.apply(deltaX: push, deltaY: 0) else {
@@ -99,7 +99,7 @@ final class RemoteCursorTests: XCTestCase {
     }
 
     func testExitsOffFarSide() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.99, y: 0.2), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.99, y: 0.2), peerBounds: peer, returnEdge: .right)
         guard case .exited(let edge, _) = cursor.apply(deltaX: 500, deltaY: 0) else {
             return XCTFail("expected an exit")
         }
@@ -107,7 +107,7 @@ final class RemoteCursorTests: XCTestCase {
     }
 
     func testVerticalExitUsesDownwardPositiveConvention() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.01), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.01), peerBounds: peer, returnEdge: .top)
         guard case .exited(let edge, _) = cursor.apply(deltaX: 0, deltaY: -100) else {
             return XCTFail("expected an exit")
         }
@@ -118,8 +118,9 @@ final class RemoteCursorTests: XCTestCase {
     /// is what keeps pointer speed feeling consistent across mismatched displays.
     func testDeltaScalesByPeerResolution() {
         var small = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5),
-                                 peerBounds: Rect(x: 0, y: 0, width: 1280, height: 720))
-        var large = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+                                 peerBounds: Rect(x: 0, y: 0, width: 1280, height: 720),
+                                 returnEdge: .left)
+        var large = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer, returnEdge: .left)
         guard case .moved(let sp) = small.apply(deltaX: 128, deltaY: 0),
               case .moved(let lp) = large.apply(deltaX: 128, deltaY: 0) else {
             return XCTFail("expected movement")
@@ -132,7 +133,7 @@ final class RemoteCursorTests: XCTestCase {
     /// control straight back. Without a margin, control oscillates between the two
     /// Macs and the primary's cursor appears to keep moving on its own.
     func testJitterAtEntryEdgeDoesNotExit() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer, returnEdge: .left)
         for _ in 0..<20 {
             guard case .moved = cursor.apply(deltaX: -1, deltaY: 0) else {
                 return XCTFail("a single pixel of jitter must not end remote control")
@@ -143,7 +144,7 @@ final class RemoteCursorTests: XCTestCase {
 
     /// A deliberate push past the margin still exits.
     func testPushPastMarginExits() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5), peerBounds: peer, returnEdge: .left)
         let push = -(RemoteCursor.exitMarginPixels + 2)
         guard case .exited(let edge, _) = cursor.apply(deltaX: push, deltaY: 0) else {
             return XCTFail("expected an exit once past the margin")
@@ -154,17 +155,53 @@ final class RemoteCursorTests: XCTestCase {
     /// The margin is in peer pixels, so it must not become huge on a small display.
     func testMarginIsPixelBasedNotProportional() {
         var small = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5),
-                                 peerBounds: Rect(x: 0, y: 0, width: 800, height: 600))
+                                 peerBounds: Rect(x: 0, y: 0, width: 800, height: 600),
+                                 returnEdge: .left)
         let push = -(RemoteCursor.exitMarginPixels + 2)
         guard case .exited = small.apply(deltaX: push, deltaY: 0) else {
             return XCTFail("same pixel push must exit on a small display too")
         }
     }
 
+    /// Regression: only the edge leading back to the primary releases control. Shoving
+    /// the pointer at the bottom of the peer's screen used to overshoot the bottom
+    /// margin, count as leaving, and snap control back to the primary from an edge that
+    /// leads nowhere. Slow movement stayed inside the margin, which disguised it as a
+    /// speed-dependent glitch.
+    func testOvershootOnANonReturnEdgeDoesNotReleaseControl() {
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.9),
+                                  peerBounds: peer, returnEdge: .left)
+        guard case .moved(let p) = cursor.apply(deltaX: 0, deltaY: 5000) else {
+            return XCTFail("the bottom edge is a wall when the primary is to the left")
+        }
+        XCTAssertEqual(p.y, 1, "pointer should pin to the bottom, not leave")
+    }
+
+    /// And it must still be able to rest there, so edge behaviours have a chance to fire.
+    func testPointerRestsAgainstANonReturnEdge() {
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.5),
+                                  peerBounds: peer, returnEdge: .left)
+        for _ in 0..<40 {
+            guard case .moved = cursor.apply(deltaX: 0, deltaY: 200) else {
+                return XCTFail("sustained pressure on a wall must not release control")
+            }
+        }
+        XCTAssertEqual(cursor.position.y, 1)
+    }
+
+    func testOvershootOnTheReturnEdgeStillReleasesControl() {
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0, y: 0.5),
+                                  peerBounds: peer, returnEdge: .left)
+        guard case .exited(let edge, _) = cursor.apply(deltaX: -500, deltaY: 0) else {
+            return XCTFail("the return edge must still hand control back")
+        }
+        XCTAssertEqual(edge, .left)
+    }
+
     /// A diagonal overshoot must resolve deterministically rather than depending on
     /// which comparison happens to run first.
     func testDiagonalOvershootPrefersHorizontalExit() {
-        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.5), peerBounds: peer)
+        var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.5), peerBounds: peer, returnEdge: .left)
         guard case .exited(let edge, _) = cursor.apply(deltaX: -5000, deltaY: -5000) else {
             return XCTFail("expected an exit")
         }
@@ -173,7 +210,8 @@ final class RemoteCursorTests: XCTestCase {
 
     func testZeroSizedPeerDoesNotDivideByZero() {
         var cursor = RemoteCursor(entry: NormalizedPoint(x: 0.5, y: 0.5),
-                                  peerBounds: Rect(x: 0, y: 0, width: 0, height: 0))
+                                  peerBounds: Rect(x: 0, y: 0, width: 0, height: 0),
+                                  returnEdge: .left)
         guard case .moved(let p) = cursor.apply(deltaX: 100, deltaY: 100) else {
             return XCTFail("expected a no-op move")
         }
