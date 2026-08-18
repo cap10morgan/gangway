@@ -3,8 +3,21 @@
 #
 # Signing identity, in order of preference:
 #   1. $STATION_SIGN_IDENTITY, if set
-#   2. a "Developer ID Application" certificate (required for distribution)
-#   3. ad-hoc, which runs locally but cannot be notarized or distributed
+#   2. Developer ID Application  - required for distribution
+#   3. Apple Development         - not distributable, but STABLE
+#   4. ad-hoc                    - last resort
+#
+# Preferring any real certificate over ad-hoc matters for day-to-day work, because TCC
+# keys permissions on the code signature's designated requirement:
+#
+#   ad-hoc              designated => cdhash H"aec77d..."
+#   real certificate    designated => identifier "com.station.Station" and
+#                                     anchor apple generic and certificate leaf[...]
+#
+# The ad-hoc requirement is the hash of the binary, so every rebuild looks like a
+# different app and Accessibility and Input Monitoring must be granted again. A
+# certificate-based requirement does not depend on the binary contents, so grants
+# survive rebuilds and you approve Station once.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -26,11 +39,17 @@ if [ -n "${STATION_SIGN_IDENTITY:-}" ]; then
     IDENTITY="$STATION_SIGN_IDENTITY"
 elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
     IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')
+elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then
+    IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | sed -E 's/.*"(.*)"/\1/')
+    echo "==> No Developer ID certificate; using Apple Development."
+    echo "    Fine for local use, and stable, so permissions survive rebuilds."
+    echo "    Distribution still requires a Developer ID (paid Apple Developer Program)."
 else
     IDENTITY="-"
-    echo "!!  No Developer ID Application certificate found."
-    echo "!!  Signing ad-hoc: this app will run on THIS Mac only."
-    echo "!!  Distribution requires the paid Apple Developer Program."
+    echo "!!  No signing certificate found; signing ad-hoc."
+    echo "!!  Every rebuild will look like a new app to macOS, so Accessibility and"
+    echo "!!  Input Monitoring must be granted again each time. Run ./reset-permissions.sh"
+    echo "!!  between builds to clear the stale entries."
 fi
 
 echo "==> Signing as: $IDENTITY"
@@ -49,9 +68,12 @@ echo "TCC grants, so it will believe it already has permission, never register w
 echo "the system, and never appear in System Settings."
 echo
 if [ "$IDENTITY" = "-" ]; then
-    echo "Ad-hoc signed. Note that macOS ties Accessibility and Input Monitoring grants"
-    echo "to the code signature, so re-signing or rebuilding may require re-granting"
-    echo "permission in System Settings."
+    echo "Ad-hoc signed: permissions will need re-granting after every rebuild."
+    echo "Run ./reset-permissions.sh first to clear stale entries."
+elif [ "${IDENTITY#Apple Development}" != "$IDENTITY" ]; then
+    echo "Signed with a stable identity, so permissions granted once should persist"
+    echo "across rebuilds. If Station stops being recognised, run ./reset-permissions.sh"
+    echo "and grant again."
 else
     echo "To notarize:"
     echo "  ditto -c -k --keepParent $APP build/Station.zip"
