@@ -91,7 +91,8 @@ print("")
 let consumed: Set<UInt32> = [18, 19, 20, 22, 29, 30, 31, 32]
 nonisolated(unsafe) var seen: [UInt32: Int] = [:]
 nonisolated(unsafe) var recorded: [(UInt32, Data, Double)] = []
-let recordPath = "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
+let recordPath = ProcessInfo.processInfo.environment["STATION_CAPTURE"]
+    ?? "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
 
 func makeTap(onlyGestures: Bool, record: Bool) -> CFMachPort? {
     let mask: CGEventMask = ~0  // every event type, including undocumented gesture types
@@ -272,6 +273,46 @@ case "analyze":
     print("rehydrated OK      : \(rtOK)")
     print("rehydrate FAILED   : \(rtFail) \(failedTypes.isEmpty ? "" : failedTypes.map { "\(typeName($0.key))=\($0.value)" }.joined(separator: " "))")
     print("byte-identical     : \(rtIdentical) / \(rtOK)")
+    print("")
+    // Which types fail to re-serialize identically, and where exactly do they differ?
+    var identicalByType: [UInt32: (ok: Int, total: Int)] = [:]
+    var firstDiff: (UInt32, Data, Data)?
+    off = 0
+    while off + 16 <= blob.count {
+        let type = blob.subdata(in: off..<off+4).withUnsafeBytes { $0.load(as: UInt32.self) }
+        let len = Int(blob.subdata(in: off+4..<off+8).withUnsafeBytes { $0.load(as: UInt32.self) })
+        off += 16
+        guard off + len <= blob.count else { break }
+        let d = blob.subdata(in: off..<off+len); off += len
+        guard let ev = CGEvent(withDataAllocator: nil, data: d as CFData),
+              let d2 = ev.data as Data? else { continue }
+        var e = identicalByType[type] ?? (0, 0)
+        e.total += 1
+        if d2 == d { e.ok += 1 } else if firstDiff == nil { firstDiff = (type, d, d2) }
+        identicalByType[type] = e
+    }
+    for (t, e) in identicalByType.sorted(by: { $0.key < $1.key }) {
+        print("  \(typeName(t)): \(e.ok)/\(e.total) byte-identical")
+    }
+    if let (t, a, b) = firstDiff {
+        print("")
+        print("first differing \(typeName(t)): \(a.count)B vs \(b.count)B")
+        if a.count == b.count {
+            let diffs = zip(a, b).enumerated().filter { $0.element.0 != $0.element.1 }
+            print("differing byte offsets: \(diffs.prefix(24).map { $0.offset })"
+                  + (diffs.count > 24 ? " ...(\(diffs.count) total)" : " (\(diffs.count) total)"))
+            for (off, pair) in diffs.prefix(8) {
+                print(String(format: "  @%4d: %02x -> %02x", off, pair.0, pair.1))
+            }
+        }
+        // Does the difference change observable behaviour, or is it bookkeeping?
+        if let ea = CGEvent(withDataAllocator: nil, data: a as CFData),
+           let eb = CGEvent(withDataAllocator: nil, data: b as CFData) {
+            print("  timestamp: \(ea.timestamp) -> \(eb.timestamp)")
+            print("  location : \(ea.location) -> \(eb.location)")
+            print("  flags    : \(ea.flags.rawValue) -> \(eb.flags.rawValue)")
+        }
+    }
     print("events with touches: \(touchTotalOrig)")
     print("  touch preserved  : \(touchSurvived)")
     print("  touch LOST       : \(touchLost)")

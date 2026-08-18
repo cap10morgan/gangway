@@ -7,7 +7,8 @@ import CoreGraphics
 //
 // This process hosts the receiving view AND replays the events, so focus is guaranteed.
 
-let recordPath = "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
+let recordPath = ProcessInfo.processInfo.environment["STATION_CAPTURE"]
+    ?? "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
 
 final class ReceiverView: NSView {
     var magnifyCount = 0
