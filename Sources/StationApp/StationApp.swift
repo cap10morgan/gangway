@@ -45,6 +45,26 @@ struct MenuContent: View {
                     .padding(12)
             }
 
+            if !model.recentEvents.isEmpty {
+                Divider()
+                DisclosureGroup("Activity") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.recentEvents, id: \.self) { line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+
             Divider()
             footer
         }

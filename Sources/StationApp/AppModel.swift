@@ -32,6 +32,9 @@ final class AppModel {
     var controlIsRemote = false
     var statusMessage = "Not running"
     var lastError: String?
+    /// Recent session events, newest first. Pairing can succeed while the stage after
+    /// it fails, and a single status line cannot show where that happened.
+    var recentEvents: [String] = []
 
     private var session: SessionController?
     private let browser = PeerBrowser()
@@ -193,7 +196,14 @@ final class AppModel {
         return session
     }
 
+    private func record(_ text: String) {
+        let stamp = Date().formatted(date: .omitted, time: .standard)
+        recentEvents.insert("\(stamp)  \(text)", at: 0)
+        if recentEvents.count > 12 { recentEvents.removeLast() }
+    }
+
     private func apply(_ event: SessionController.Event) {
+        record(Self.describe(event))
         switch event {
         case .listening(let port):
             listeningPort = port
@@ -220,6 +230,19 @@ final class AppModel {
             lastError = message
             statusMessage = "Failed"
             mode = .idle
+        }
+    }
+
+    private static func describe(_ event: SessionController.Event) -> String {
+        switch event {
+        case .listening(let port):        return "listening on \(port)"
+        case .needsConfirmation:          return "awaiting code confirmation"
+        case .paired(let name):           return "paired with \(name)"
+        case .connected(let name):        return "connected to \(name)"
+        case .disconnected(let reason):   return "disconnected\(reason.map { ": \($0)" } ?? "")"
+        case .controlMoved(let remote):   return remote ? "control -> peer" : "control -> here"
+        case .armed:                      return "capture armed"
+        case .failed(let message):        return "FAILED: \(message)"
         }
     }
 
