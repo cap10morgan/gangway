@@ -37,32 +37,17 @@ struct MenuContent: View {
                 }
             }
 
+            if model.mode != .idle {
+                Divider()
+                ClipboardSection(model: model)
+            }
+
             if let error = model.lastError {
                 Divider()
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .padding(12)
-            }
-
-            if !model.recentEvents.isEmpty {
-                Divider()
-                DisclosureGroup("Activity") {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.recentEvents, id: \.self) { line in
-                            Text(line)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .lineLimit(1)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
-                }
-                .font(.caption)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
             }
 
             Divider()
@@ -240,6 +225,32 @@ struct ReceivingSection: View {
             }
         }
         .padding(12)
+    }
+}
+
+struct ClipboardSection: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Share clipboard", isOn: $model.clipboardSyncEnabled)
+                .font(.callout)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            if let activity = model.lastClipboardActivity, model.clipboardSyncEnabled {
+                Text(activity)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if model.clipboardSyncEnabled {
+                // Say what is excluded, so nobody assumes passwords are being synced.
+                Text("Items marked private by password managers are never shared.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
 

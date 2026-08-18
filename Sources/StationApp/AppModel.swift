@@ -20,6 +20,12 @@ final class AppModel {
     var permissions = Permissions.current()
     var peers: [DiscoveredPeer] = []
     var edge: ScreenEdge = .right
+    /// Off unless the user asks for it: sharing a clipboard between machines is a
+    /// privacy decision, not a sensible default.
+    var clipboardSyncEnabled = false {
+        didSet { session?.clipboardSyncEnabled = clipboardSyncEnabled }
+    }
+    var lastClipboardActivity: String?
 
     /// Six digits both Macs display during a first pairing. The user confirms they
     /// match; this is a comparison, never a secret.
@@ -32,9 +38,9 @@ final class AppModel {
     var controlIsRemote = false
     var statusMessage = "Not running"
     var lastError: String?
-    /// Recent session events, newest first. Pairing can succeed while the stage after
-    /// it fails, and a single status line cannot show where that happened.
-    var recentEvents: [String] = []
+    /// Recent session events, newest first. Not shown in the menu; kept because
+    /// pairing can succeed while a later stage fails, and a debug window will want it.
+    private(set) var recentEvents: [String] = []
 
     private var session: SessionController?
     private let browser = PeerBrowser()
@@ -216,6 +222,7 @@ final class AppModel {
         let session = SessionController(deviceName: deviceName, deviceID: deviceID)
         // Quitting while control is on a peer must not leave the mouse decoupled.
         session.installTerminationHandlers()
+        session.clipboardSyncEnabled = clipboardSyncEnabled
         session.onEvent = { [weak self] event in
             Task { @MainActor in self?.apply(event) }
         }
@@ -256,6 +263,11 @@ final class AppModel {
             statusMessage = remote ? "Control is on the other Mac" : "Control is here"
         case .armed:
             statusMessage = "Ready — move the pointer off the \(edge.rawValue) edge"
+        case .clipboardSynced(let sent, let bytes):
+            let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            lastClipboardActivity = sent ? "Clipboard sent (\(size))" : "Clipboard received (\(size))"
+        case .clipboardSkipped(let reason):
+            lastClipboardActivity = reason
         case .failed(let message):
             lastError = message
             statusMessage = "Failed"
@@ -273,6 +285,9 @@ final class AppModel {
         case .controlMoved(let remote):   return remote ? "control -> peer" : "control -> here"
         case .armed:                      return "capture armed"
         case .failed(let message):        return "FAILED: \(message)"
+        case .clipboardSynced(let sent, let bytes):
+            return "clipboard \(sent ? "sent" : "received") \(bytes)B"
+        case .clipboardSkipped(let reason): return "clipboard skipped: \(reason)"
         }
     }
 

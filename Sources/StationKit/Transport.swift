@@ -415,12 +415,12 @@ public final class StationListener: @unchecked Sendable {
     ///   port if it is already taken, so a second instance still runs.
     public func start(port: NWEndpoint.Port? = nil, advertise: Bool = true) throws {
         let requested = port ?? NWEndpoint.Port(rawValue: stationDefaultPort) ?? .any
-        let listener: NWListener
-        do {
-            listener = try NWListener(using: TransportParameters.make(), on: requested)
-        } catch {
-            listener = try NWListener(using: TransportParameters.make(), on: .any)
-        }
+        try startListener(on: requested, advertise: advertise, allowFallback: requested != .any)
+    }
+
+    private func startListener(on port: NWEndpoint.Port, advertise: Bool,
+                               allowFallback: Bool) throws {
+        let listener = try NWListener(using: TransportParameters.make(), on: port)
 
         if advertise {
             var txt = NWTXTRecord()
@@ -443,17 +443,34 @@ public final class StationListener: @unchecked Sendable {
             link.start()
         }
         listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
             switch state {
             case .ready:
-                if let port = self?.listener?.port, port != .any { self?.onReady?(port) }
+                if let bound = self.listener?.port, bound != .any { self.onReady?(bound) }
             case .failed(let error):
-                self?.onError?(error)
+                // A busy fixed port only surfaces here, not when the listener is
+                // constructed, so the fallback has to live in the failure path. Without
+                // it a second Station on the same Mac, or a leftover process still
+                // holding the port, simply never listens.
+                if allowFallback, Self.isAddressInUse(error) {
+                    self.listener?.cancel()
+                    self.listener = nil
+                    try? self.startListener(on: .any, advertise: advertise,
+                                            allowFallback: false)
+                } else {
+                    self.onError?(error)
+                }
             default:
                 break
             }
         }
         listener.start(queue: queue)
         self.listener = listener
+    }
+
+    private static func isAddressInUse(_ error: NWError) -> Bool {
+        if case .posix(let code) = error { return code == .EADDRINUSE }
+        return false
     }
 
     /// The bound port, or nil until the listener is ready. `NWListener.port` reads back

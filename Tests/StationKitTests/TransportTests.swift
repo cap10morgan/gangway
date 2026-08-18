@@ -42,7 +42,7 @@ final class TransportTests: XCTestCase {
                 received.fulfill()
             }
         }
-        try listener.start(advertise: false)
+        try listener.start(port: .any, advertise: false)   // never the fixed port in tests
         defer { listener.stop(); serverLink?.cancel() }
 
         let port = try waitForPort(listener)
@@ -91,7 +91,7 @@ final class TransportTests: XCTestCase {
             link.onPhase = { if case .awaitingConfirmation = $0 { sawConfirmation.fulfill() } }
             link.onMessage = { _, _ in delivered = true }
         }
-        try listener.start(advertise: false)
+        try listener.start(port: .any, advertise: false)   // never the fixed port in tests
         defer { listener.stop(); serverLink?.cancel() }
 
         let port = try waitForPort(listener)
@@ -126,7 +126,7 @@ final class TransportTests: XCTestCase {
             serverLink = link
             link.onPhase = { if case .awaitingConfirmation = $0 { link.confirmPairing() } }
         }
-        try listener.start(advertise: false)
+        try listener.start(port: .any, advertise: false)   // never the fixed port in tests
         defer { listener.stop(); serverLink?.cancel() }
 
         let port = try waitForPort(listener)
@@ -162,7 +162,7 @@ final class TransportTests: XCTestCase {
             serverLink = link
             link.onPhase = { if case .awaitingConfirmation = $0 { link.confirmPairing() } }
         }
-        try listener.start(advertise: false)
+        try listener.start(port: .any, advertise: false)   // never the fixed port in tests
         defer { listener.stop(); serverLink?.cancel() }
 
         let port = try waitForPort(listener)

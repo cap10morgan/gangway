@@ -88,10 +88,16 @@ case "secondary":
             log("secondary", remote ? "control ARRIVED" : "control LEFT")
         case .armed:
             break
+        case .clipboardSynced(let sent, let bytes):
+            log("secondary", "clipboard \(sent ? "sent" : "received") (\(bytes) bytes)")
+        case .clipboardSkipped(let reason):
+            log("secondary", "clipboard skipped: \(reason)")
         case .failed(let message):
             log("secondary", "failed: \(message)")
         }
     }
+    session.clipboardSyncEnabled = CommandLine.arguments.contains("--clipboard")
+    if session.clipboardSyncEnabled { log("secondary", "clipboard sync ON") }
     log("secondary", "identity \(session.publicIdentity.prefix(4).map { String(format: "%02x", $0) }.joined())")
     log("secondary", "displays: \(ScreenGeometry.localScreens().screens.count), bounds \(ScreenGeometry.globalBounds)")
     session.startReceiving()
@@ -128,6 +134,10 @@ case "primary":
             log("primary", remote ? "control -> PEER" : "control -> LOCAL")
         case .disconnected(let reason):
             log("primary", "disconnected\(reason.map { ": \($0)" } ?? "")")
+        case .clipboardSynced(let sent, let bytes):
+            log("primary", "clipboard \(sent ? "sent" : "received") (\(bytes) bytes)")
+        case .clipboardSkipped(let reason):
+            log("primary", "clipboard skipped: \(reason)")
         case .failed(let message):
             log("primary", "failed: \(message)")
             exit(1)
@@ -135,6 +145,8 @@ case "primary":
             break
         }
     }
+    session.clipboardSyncEnabled = CommandLine.arguments.contains("--clipboard")
+    if session.clipboardSyncEnabled { log("primary", "clipboard sync ON") }
     log("primary", "identity \(session.publicIdentity.prefix(4).map { String(format: "%02x", $0) }.joined())")
     log("primary", "local bounds \(ScreenGeometry.globalBounds), peer on \(edge.rawValue) edge")
     session.startSending(host: host, port: port, edge: edge,

@@ -20,6 +20,9 @@ public enum MessageType: UInt8, Sendable {
     case input       = 0x10
     case enterScreen = 0x11
     case leaveScreen = 0x12
+    /// One chunk of a clipboard transfer. Clipboard payloads routinely exceed a single
+    /// frame, so they are always chunked rather than special-cased by size.
+    case clipboard   = 0x20
 
     // Handshake. These are the only frames sent outside the encrypted channel;
     // everything else is wrapped in `.encrypted`.

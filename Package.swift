@@ -14,5 +14,6 @@ let package = Package(
         .executableTarget(name: "stationctl", dependencies: ["StationKit", "StationInput"]),
         .executableTarget(name: "StationApp", dependencies: ["StationKit", "StationInput"]),
         .testTarget(name: "StationKitTests", dependencies: ["StationKit"]),
+        .testTarget(name: "StationInputTests", dependencies: ["StationInput", "StationKit"]),
     ]
 )

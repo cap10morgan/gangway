@@ -25,6 +25,9 @@ public final class SessionController: @unchecked Sendable {
         case controlMoved(remote: Bool)
         case armed
         case failed(String)
+        /// Clipboard content moved between the Macs, with a direction and byte count.
+        case clipboardSynced(sent: Bool, bytes: Int)
+        case clipboardSkipped(String)
     }
 
     public var onEvent: (@Sendable (Event) -> Void)?
@@ -41,6 +44,14 @@ public final class SessionController: @unchecked Sendable {
     private var capture: EventCapture?
     private let injection = EventInjection()
     private var peerID = UUID()
+    private let clipboard = ClipboardMonitor()
+    private var clipboardAssembler = ClipboardAssembler()
+    private var clipboardTransferID: UInt64 = 0
+    /// Off by default: sharing the clipboard is a meaningful privacy decision, not
+    /// something to switch on silently the first time two Macs pair.
+    public var clipboardSyncEnabled = false {
+        didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
+    }
 
     public init(deviceName: String, deviceID: UUID = UUID(), identity: Identity? = nil) {
         self.deviceName = deviceName
@@ -51,6 +62,39 @@ public final class SessionController: @unchecked Sendable {
     }
 
     public var publicIdentity: Data { identity.publicKeyData }
+
+    // MARK: - Clipboard
+
+    private func startClipboard() {
+        clipboard.onSkipped = { [weak self] reason in
+            self?.onEvent?(.clipboardSkipped(reason))
+        }
+        clipboard.onLocalChange = { [weak self] content in
+            self?.sendClipboard(content)
+        }
+        // The timer needs the main run loop, and callers may enable this from anywhere.
+        DispatchQueue.main.async { [weak self] in self?.clipboard.start() }
+    }
+
+    private func sendClipboard(_ content: ClipboardContent) {
+        guard let link, let payload = try? content.encoded() else { return }
+        clipboardTransferID &+= 1
+        for chunk in ClipboardTransfer.chunks(of: payload, transferID: clipboardTransferID) {
+            link.send(.clipboard, chunk)
+        }
+        onEvent?(.clipboardSynced(sent: true, bytes: payload.count))
+    }
+
+    private func receiveClipboard(_ frame: Data) {
+        do {
+            guard let payload = try clipboardAssembler.accept(frame) else { return }
+            let content = try ClipboardContent.decode(payload)
+            clipboard.apply(content)
+            onEvent?(.clipboardSynced(sent: false, bytes: payload.count))
+        } catch {
+            onEvent?(.clipboardSkipped("could not read the clipboard from the other Mac"))
+        }
+    }
 
     /// Confirm the SAS matched on both Macs. Pins the peer so future connections need
     /// no user interaction.
@@ -139,6 +183,9 @@ public final class SessionController: @unchecked Sendable {
             guard let event = InputEvent.decode(payload) else { return }
             injection.inject(event)
 
+        case .clipboard:
+            receiveClipboard(payload)
+
         default:
             break
         }
@@ -206,7 +253,12 @@ public final class SessionController: @unchecked Sendable {
             }
         }
         link.onMessage = { [weak self] type, payload in
-            guard let self, type == .screens,
+            guard let self else { return }
+            if type == .clipboard {
+                self.receiveClipboard(payload)
+                return
+            }
+            guard type == .screens,
                   let peerScreens = try? JSONDecoder().decode(ScreenSet.self, from: payload) else { return }
             // The tap must be created on the thread running the run loop it attaches to.
             DispatchQueue.main.async {
@@ -223,6 +275,7 @@ public final class SessionController: @unchecked Sendable {
     }
 
     public func stop() {
+        clipboard.stop()
         // Tearing down the capture releases the cursor, so it must happen on the
         // run-loop thread and must happen even if the link is already gone.
         if let capture {
