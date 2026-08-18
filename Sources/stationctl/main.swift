@@ -245,92 +245,66 @@ case "edge-test":
     exit(0)
 
 case "dock-test":
-    // Synthetic CGEventPost moves the logical cursor but does not reveal an auto-hidden
-    // Dock. Other APIs move the pointer at different layers, so try each in turn and
-    // see which, if any, macOS honours for edge-triggered behaviour.
+    // What actually makes an auto-hidden Dock reveal for injected input? Slow manual
+    // movement works, so position alone is not the issue; the likely difference is that
+    // once the pointer pins to the edge we post events at an identical position and
+    // macOS sees no motion at all. Each variant below isolates one factor.
     let display = CGDisplayBounds(CGMainDisplayID())
     let x = display.midX
-    let home = CGPoint(x: x, y: display.midY)
-    let edge = CGPoint(x: x, y: display.maxY)
+    let bottom = display.maxY - 1
 
+    func move(_ point: CGPoint) {
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
     func rest() {
-        CGWarpMouseCursorPosition(home)
-        usleep(900_000)
+        CGWarpMouseCursorPosition(CGPoint(x: x, y: display.midY))
+        usleep(1_200_000)
+    }
+    func approachSlowly() {
+        for y in stride(from: display.maxY - 200, through: bottom, by: 4) {
+            move(CGPoint(x: x, y: y)); usleep(15_000)
+        }
     }
 
-    log("dock", "display \(display) — watch the bottom of the screen")
+    log("dock", "display \(display); watch the bottom of the screen")
     print("")
 
     rest()
-    log("dock", "[1/3] posted mouseMoved events ...")
-    for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left)?
-            .post(tap: .cghidEventTap)
-        usleep(12_000)
+    log("dock", "[A] slow approach, then hold still at the very bottom row")
+    approachSlowly()
+    for _ in 0..<30 { move(CGPoint(x: x, y: bottom)); usleep(50_000) }
+    sleep(1)
+
+    rest()
+    log("dock", "[B] slow approach, then hold one pixel above the bottom")
+    for y in stride(from: display.maxY - 200, through: bottom - 1, by: 4) {
+        move(CGPoint(x: x, y: y)); usleep(15_000)
     }
-    for _ in 0..<30 {
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                mouseCursorPosition: edge, mouseButton: .left)?.post(tap: .cghidEventTap)
-        usleep(50_000)
+    for _ in 0..<30 { move(CGPoint(x: x, y: bottom - 1)); usleep(50_000) }
+    sleep(1)
+
+    rest()
+    log("dock", "[C] slow approach, then oscillate one pixel at the edge")
+    approachSlowly()
+    for i in 0..<40 {
+        move(CGPoint(x: x, y: i % 2 == 0 ? bottom : bottom - 1))
+        usleep(40_000)
     }
     sleep(1)
 
     rest()
-    log("dock", "[2/3] CGWarpMouseCursorPosition ...")
-    for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
-        CGWarpMouseCursorPosition(CGPoint(x: x, y: y))
-        usleep(12_000)
-    }
-    for _ in 0..<30 { CGWarpMouseCursorPosition(edge); usleep(50_000) }
-    sleep(1)
-
-    rest()
-    log("dock", "[3/3] CGDisplayMoveCursorToPoint ...")
-    // Display-relative, so the point must be in display coordinates.
-    for y in stride(from: display.height - 250, through: display.height - 1, by: 6) {
-        CGDisplayMoveCursorToPoint(CGMainDisplayID(), CGPoint(x: x, y: y))
-        usleep(12_000)
-    }
-    for _ in 0..<30 {
-        CGDisplayMoveCursorToPoint(CGMainDisplayID(), CGPoint(x: x, y: display.height - 1))
-        usleep(50_000)
+    log("dock", "[D] fast jump to the edge, then oscillate one pixel")
+    move(CGPoint(x: x, y: bottom))
+    for i in 0..<40 {
+        move(CGPoint(x: x, y: i % 2 == 0 ? bottom : bottom - 1))
+        usleep(40_000)
     }
     sleep(1)
     rest()
-
-    log("dock", "[4/4] CGEventPostToPid, delivered straight to the Dock process ...")
-    // The Dock decides its own reveal. Session-level posts are evidently filtered for
-    // edge behaviour, but an event addressed to a specific process takes a different
-    // delivery path and may still be seen.
-    let dockPid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
-        .first?.processIdentifier
-    if let dockPid {
-        log("dock", "Dock pid \(dockPid)")
-        for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
-            if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                               mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left) {
-                e.postToPid(dockPid)
-            }
-            usleep(12_000)
-        }
-        for _ in 0..<30 {
-            if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                               mouseCursorPosition: edge, mouseButton: .left) {
-                e.setIntegerValueField(.mouseEventDeltaY, value: 2)
-                e.postToPid(dockPid)
-            }
-            usleep(50_000)
-        }
-        sleep(1)
-        rest()
-    } else {
-        log("dock", "could not find the Dock process")
-    }
 
     print("")
-    log("dock", "which step, if any, revealed the Dock?")
-    log("dock", "1 posted, 2 warp, 3 display-move, 4 post-to-Dock")
+    log("dock", "which variant revealed the Dock? A, B, C, D, or none")
     exit(0)
 
 case "discover":
