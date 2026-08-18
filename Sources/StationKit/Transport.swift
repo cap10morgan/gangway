@@ -9,20 +9,41 @@ public let stationBonjourType = "_station._tcp"
 /// The previous TLS-PSK arrangement required a shared secret before the connection
 /// existed, which forced a low-entropy typed code and an offline-guessable handshake.
 enum TransportParameters {
+
+    /// Set `STATION_SIMPLE_TRANSPORT=1` to drop everything except Nagle-off.
+    ///
+    /// The tuning below is invisible on loopback but very much live on real Wi-Fi:
+    /// `.interactiveVoice` marks packets into the WMM voice access category, which some
+    /// access points handle poorly, `includePeerToPeer` allows AWDL, and the keepalive
+    /// values are tight enough that a power-saving link can look dead. When a
+    /// connection works locally but not between two Macs, this isolates the cause
+    /// without guesswork.
+    static var isSimple: Bool {
+        ProcessInfo.processInfo.environment["STATION_SIMPLE_TRANSPORT"] == "1"
+    }
+
     static func make() -> NWParameters {
         let tcp = NWProtocolTCP.Options()
         // Input forwarding is a latency game, not a throughput game. Nagle would
         // coalesce our tiny event frames and add up to 40ms of visible cursor lag.
+        // This one is never disabled; it is the only setting that is unambiguously right.
         tcp.noDelay = true
-        tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 2
-        tcp.keepaliveCount = 3
-        tcp.keepaliveInterval = 1
-        tcp.connectionTimeout = 5
+
+        if !isSimple {
+            tcp.enableKeepalive = true
+            // Detect a dead peer in roughly 20s. The previous 2/1/3 dropped healthy
+            // connections whenever a Wi-Fi link went briefly into power saving.
+            tcp.keepaliveIdle = 10
+            tcp.keepaliveCount = 3
+            tcp.keepaliveInterval = 3
+            tcp.connectionTimeout = 10
+        }
 
         let params = NWParameters(tls: nil, tcp: tcp)
-        params.includePeerToPeer = true
-        params.serviceClass = .interactiveVoice   // prioritize on congested Wi-Fi
+        if !isSimple {
+            params.includePeerToPeer = true
+            params.serviceClass = .responsiveData
+        }
         return params
     }
 }
