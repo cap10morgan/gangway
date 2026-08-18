@@ -56,6 +56,12 @@ else
     echo "!!"
     echo "!!  Fix this once with:  ./make-signing-cert.sh"
     echo "!!  It creates a stable self-signed identity so permissions persist."
+    echo "!!"
+    echo "!!  If you DO have a certificate, the keychain search list may be broken,"
+    echo "!!  which looks identical to having none. Check with:"
+    echo "!!      security list-keychains -d user"
+    echo "!!  It should list login.keychain-db. Restore it with:"
+    echo "!!      security list-keychains -d user -s ~/Library/Keychains/login.keychain-db"
 fi
 
 echo "==> Signing as: $IDENTITY"
