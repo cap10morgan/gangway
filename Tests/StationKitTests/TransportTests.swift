@@ -162,6 +162,66 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(deliveredPayload, Data("early".utf8))
     }
 
+    /// Regression: Station sends from more than one thread at once — clipboard
+    /// transfers on a main-thread timer, replies on the network queue. Each frame's
+    /// sequence number lives in its nonce and must reach the wire in the order it was
+    /// taken, or the receiver reads a non-monotonic nonce, calls it a replay, and drops
+    /// the connection.
+    func testConcurrentSendsArriveInOrder() throws {
+        let serverIdentity = Identity.generate()
+        nonisolated(unsafe) var serverLink: StationLink?
+        nonisolated(unsafe) var receivedCount = 0
+        nonisolated(unsafe) var failure: String?
+        let total = 400
+        let allReceived = expectation(description: "all frames received")
+
+        let listener = StationListener(deviceName: "test-secondary", identity: serverIdentity)
+        listener.onLink = { link in
+            serverLink = link
+            link.onPhase = { phase in
+                if case .awaitingConfirmation = phase { link.confirmPairing() }
+                if case .failed(let reason) = phase { failure = reason }
+            }
+            link.onMessage = { type, _ in
+                guard type == .input else { return }
+                receivedCount += 1
+                if receivedCount == total { allReceived.fulfill() }
+            }
+        }
+        try listener.start(port: .any, advertise: false)
+        defer { listener.stop(); serverLink?.cancel() }
+
+        let port = try waitForPort(listener)
+        let client = StationLink(endpoint: .hostPort(host: "127.0.0.1", port: port),
+                                 identity: .generate())
+        let ready = expectation(description: "ready")
+        client.onPhase = { phase in
+            if case .awaitingConfirmation = phase { client.confirmPairing() }
+            if phase == .ready { ready.fulfill() }
+        }
+        client.start()
+        defer { client.cancel() }
+        wait(for: [ready], timeout: 10)
+
+        // Hammer from several queues at once, the way clipboard and input do.
+        let group = DispatchGroup()
+        for queue in 0..<4 {
+            DispatchQueue.global().async(group: group) {
+                for i in 0..<(total / 4) {
+                    let blob = Data(repeating: UInt8(queue), count: 64 + i % 32)
+                    client.send(.input, InputEvent(eventType: 29, normalizedX: 0.5,
+                                                   normalizedY: 0.5, deltaX: 0, deltaY: 0,
+                                                   eventData: blob).encode())
+                }
+            }
+        }
+        group.wait()
+
+        wait(for: [allReceived], timeout: 20)
+        XCTAssertNil(failure, "concurrent sends must not break the connection")
+        XCTAssertEqual(receivedCount, total)
+    }
+
     /// A peer presenting an identity other than the pinned one must be refused, which is
     /// what an impersonating machine looks like.
     func testPinnedIdentityMismatchIsRefused() throws {

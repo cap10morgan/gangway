@@ -236,24 +236,31 @@ public final class StationLink: @unchecked Sendable {
         // Inbound first: the peer's `hello` has to be seen before we answer it, and
         // ordering the other way would answer a message we have not processed yet.
         for (type, payload) in inbound { onMessage?(type, payload) }
+        // Outside the lock: send() takes it per frame, which keeps each seal paired
+        // with its enqueue.
         for (type, payload) in outbound { send(type, payload) }
     }
 
     // MARK: - Sending
 
     public func send(_ type: MessageType, _ payload: Data) {
+        // Sealing and enqueueing must happen together. Each frame's sequence number
+        // lives in its nonce and the receiver requires them to arrive in order, so
+        // taking a number under the lock and sending after releasing it lets two
+        // threads seal in one order and reach the wire in another. The receiver then
+        // reads a non-monotonic nonce, treats it as a replay, and drops the
+        // connection. Station really does send from two threads at once: clipboard
+        // transfers run on a main-thread timer while replies go out on the network
+        // queue.
         lock.lock()
-        let ready = confirmed && sendCipher != nil
-        if !ready {
+        defer { lock.unlock() }
+
+        guard confirmed, let cipher = sendCipher else {
             // Never drop app messages that arrive mid-handshake; deliver them in order
             // once the channel opens.
             pendingOutbound.append((type, payload))
-            lock.unlock()
             return
         }
-        let cipher = sendCipher!
-        lock.unlock()
-
         guard let sealed = try? cipher.seal(Framing.frame(type, payload)) else { return }
         sendRaw(.encrypted, sealed)
     }
