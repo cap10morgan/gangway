@@ -35,7 +35,7 @@ public final class EventCapture: @unchecked Sendable {
     /// Control just moved to a peer; the peer should place its cursor at this point.
     public var onEnterPeer: (@Sendable (UUID, NormalizedPoint) -> Void)?
     /// Control came back to this Mac.
-    public var onReturnLocal: (@Sendable (Edge, NormalizedPoint) -> Void)?
+    public var onReturnLocal: (@Sendable (ScreenEdge, NormalizedPoint) -> Void)?
     public var onTapDisabled: (@Sendable () -> Void)?
 
     public var layout: Layout

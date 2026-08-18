@@ -7,7 +7,7 @@ final class EdgeDetectorTests: XCTestCase {
     private let laptop = Rect(x: 0, y: 0, width: 1440, height: 900)
     private let peerID = UUID()
 
-    private func detector(_ edge: Edge) -> EdgeDetector {
+    private func detector(_ edge: ScreenEdge) -> EdgeDetector {
         EdgeDetector(bounds: laptop, layout: Layout(placements: [edge: peerID]))
     }
 

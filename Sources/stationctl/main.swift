@@ -132,7 +132,7 @@ case "primary":
         print("usage: stationctl primary --host <ip> --port <port> --pair <code.salt> [--edge right]")
         exit(2)
     }
-    let edge = Edge(rawValue: flag("edge") ?? "right") ?? .right
+    let edge = ScreenEdge(rawValue: flag("edge") ?? "right") ?? .right
     let peerID = UUID()
 
     let capture = EventCapture(layout: Layout(placements: [edge: peerID]))

@@ -195,12 +195,21 @@ public final class StationListener: @unchecked Sendable {
 
     /// - Parameter credential: what an incoming peer must prove it knows. While the
     ///   user has a pairing code on screen this is `.code`; otherwise `.longTerm`.
+    /// - Parameter salt: also published in the Bonjour TXT record. The salt cannot
+    ///   travel inside the encrypted channel because it is needed to derive the key
+    ///   that establishes it, so it is public by design. Publishing it means the user
+    ///   only ever types the six-digit code.
     public func start(credential: PairingCredential, salt: Data, port: NWEndpoint.Port? = nil,
                       advertise: Bool = true) throws {
         let params = TransportParameters.make(psk: credential.psk(salt: salt))
         let listener = try NWListener(using: params, on: port ?? .any)
         if advertise {
-            listener.service = NWListener.Service(name: deviceName, type: stationBonjourType)
+            var txt = NWTXTRecord()
+            txt["salt"] = salt.map { String(format: "%02x", $0) }.joined()
+            txt["v"] = String(stationProtocolVersion)
+            listener.service = NWListener.Service(name: deviceName,
+                                                 type: stationBonjourType,
+                                                 txtRecord: txt.data)
         }
 
         listener.newConnectionHandler = { [weak self] connection in
@@ -273,11 +282,41 @@ public final class PeerBrowser: @unchecked Sendable {
 public struct DiscoveredPeer: Sendable, Equatable, Identifiable {
     public let name: String
     public let endpoint: NWEndpoint
+    /// Pairing salt advertised by the peer, if it published one.
+    public let salt: Data?
+    public let protocolVersion: Int?
     public var id: String { name }
+
+    /// True when this peer speaks a protocol version we understand.
+    public var isCompatible: Bool {
+        guard let protocolVersion else { return false }
+        return protocolVersion == stationProtocolVersion
+    }
 
     init?(result: NWBrowser.Result) {
         guard case .service(let name, _, _, _) = result.endpoint else { return nil }
         self.name = name
         self.endpoint = result.endpoint
+
+        if case .bonjour(let txt) = result.metadata {
+            self.salt = txt["salt"].flatMap(Self.hexToData)
+            self.protocolVersion = txt["v"].flatMap(Int.init)
+        } else {
+            self.salt = nil
+            self.protocolVersion = nil
+        }
+    }
+
+    static func hexToData(_ hex: String) -> Data? {
+        guard hex.count % 2 == 0 else { return nil }
+        var bytes = Data(capacity: hex.count / 2)
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2)
+            guard let byte = UInt8(hex[i..<j], radix: 16) else { return nil }
+            bytes.append(byte)
+            i = j
+        }
+        return bytes
     }
 }

@@ -12,6 +12,7 @@ let package = Package(
         .target(name: "StationKit"),
         .target(name: "StationInput", dependencies: ["StationKit"]),
         .executableTarget(name: "stationctl", dependencies: ["StationKit", "StationInput"]),
+        .executableTarget(name: "StationApp", dependencies: ["StationKit", "StationInput"]),
         .testTarget(name: "StationKitTests", dependencies: ["StationKit"]),
     ]
 )

@@ -2,10 +2,10 @@ import Foundation
 import CoreGraphics
 
 /// Which edge of the local display arrangement leads to a peer.
-public enum Edge: String, Codable, Sendable, CaseIterable {
+public enum ScreenEdge: String, Codable, Sendable, CaseIterable {
     case left, right, top, bottom
 
-    public var opposite: Edge {
+    public var opposite: ScreenEdge {
         switch self {
         case .left: return .right
         case .right: return .left
@@ -17,11 +17,11 @@ public enum Edge: String, Codable, Sendable, CaseIterable {
 
 /// Where each peer sits relative to this Mac.
 public struct Layout: Codable, Sendable, Equatable {
-    public var placements: [Edge: UUID]
-    public init(placements: [Edge: UUID] = [:]) { self.placements = placements }
+    public var placements: [ScreenEdge: UUID]
+    public init(placements: [ScreenEdge: UUID] = [:]) { self.placements = placements }
 
-    public func peer(at edge: Edge) -> UUID? { placements[edge] }
-    public func edge(of peer: UUID) -> Edge? {
+    public func peer(at edge: ScreenEdge) -> UUID? { placements[edge] }
+    public func edge(of peer: UUID) -> ScreenEdge? {
         placements.first { $0.value == peer }?.key
     }
 }
@@ -72,7 +72,7 @@ public struct EdgeDetector: Sendable {
 
     public struct Crossing: Sendable, Equatable {
         public let peer: UUID
-        public let edge: Edge
+        public let edge: ScreenEdge
         /// Where the cursor should appear on the peer, in the peer's normalized space.
         public let entry: NormalizedPoint
     }
@@ -134,7 +134,7 @@ public struct RemoteCursor: Sendable, Equatable {
     public enum Motion: Sendable, Equatable {
         case moved(NormalizedPoint)
         /// The cursor ran off the peer on this edge and control returns to the primary.
-        case exited(Edge, NormalizedPoint)
+        case exited(ScreenEdge, NormalizedPoint)
     }
 
     public mutating func apply(deltaX: Double, deltaY: Double) -> Motion {
