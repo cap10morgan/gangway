@@ -39,6 +39,10 @@ if [ -n "${STATION_SIGN_IDENTITY:-}" ]; then
     IDENTITY="$STATION_SIGN_IDENTITY"
 elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
     IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')
+elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Station Development"; then
+    IDENTITY="Station Development"
+    echo "==> Using the local self-signed \"Station Development\" certificate."
+    echo "    Stable, so permissions survive rebuilds. Not for distribution."
 elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"; then
     IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | sed -E 's/.*"(.*)"/\1/')
     echo "==> No Developer ID certificate; using Apple Development."
@@ -48,8 +52,10 @@ else
     IDENTITY="-"
     echo "!!  No signing certificate found; signing ad-hoc."
     echo "!!  Every rebuild will look like a new app to macOS, so Accessibility and"
-    echo "!!  Input Monitoring must be granted again each time. Run ./reset-permissions.sh"
-    echo "!!  between builds to clear the stale entries."
+    echo "!!  Input Monitoring must be granted again each time."
+    echo "!!"
+    echo "!!  Fix this once with:  ./make-signing-cert.sh"
+    echo "!!  It creates a stable self-signed identity so permissions persist."
 fi
 
 echo "==> Signing as: $IDENTITY"
