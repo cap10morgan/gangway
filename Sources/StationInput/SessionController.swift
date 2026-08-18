@@ -12,8 +12,13 @@ import StationKit
 public final class SessionController: @unchecked Sendable {
 
     public enum Event: Sendable {
-        /// The secondary is listening; show this pairing material to the user.
-        case listening(code: String, salt: Data, port: UInt16)
+        /// The secondary is listening and discoverable.
+        case listening(port: UInt16)
+        /// First pairing with this peer: both Macs must show the same six digits and
+        /// the user must confirm. This is a comparison, not a secret.
+        case needsConfirmation(sas: String)
+        /// Pairing completed and the peer's identity was pinned.
+        case paired(peerName: String)
         case connected(peerName: String)
         case disconnected(reason: String?)
         /// Control moved to the peer (true) or came back (false).
@@ -26,15 +31,37 @@ public final class SessionController: @unchecked Sendable {
 
     private let deviceName: String
     private let deviceID: UUID
+    private let identity: Identity
     private var listener: StationListener?
+    /// Set while a first-time pairing is awaiting the user's SAS confirmation.
+    private var pendingPeerIdentity: Data?
+    private var pendingPeerName: String?
+    private var pendingEdge: ScreenEdge?
     private var link: StationLink?
     private var capture: EventCapture?
     private let injection = EventInjection()
     private var peerID = UUID()
 
-    public init(deviceName: String, deviceID: UUID = UUID()) {
+    public init(deviceName: String, deviceID: UUID = UUID(), identity: Identity? = nil) {
         self.deviceName = deviceName
         self.deviceID = deviceID
+        // A missing identity is not recoverable, and generating a throwaway one would
+        // silently break every existing pairing, so fall back only in-memory.
+        self.identity = identity ?? ((try? PairingStore.loadOrCreateIdentity()) ?? .generate())
+    }
+
+    public var publicIdentity: Data { identity.publicKeyData }
+
+    /// Confirm the SAS matched on both Macs. Pins the peer so future connections need
+    /// no user interaction.
+    public func confirmPairing() {
+        guard let link, let peerKey = pendingPeerIdentity else { return }
+        PairingStore.upsert(PairingStore.Peer(publicKey: peerKey,
+                                              name: pendingPeerName ?? "Mac",
+                                              edge: pendingEdge ?? .right))
+        pendingPeerIdentity = nil
+        link.confirmPairing()
+        onEvent?(.paired(peerName: pendingPeerName ?? "Mac"))
     }
 
     /// Ensure the tap is released and the cursor restored if the process is signalled.
@@ -47,35 +74,40 @@ public final class SessionController: @unchecked Sendable {
     // MARK: - Secondary
 
     /// Listen for a primary and inject whatever it sends.
-    public func startReceiving(code: String? = nil) {
+    public func startReceiving() {
         stop()
-        let pairingCode = code ?? Pairing.generateCode()
-        let salt = Pairing.generateSalt()
         let screens = ScreenGeometry.localScreens()
 
-        let listener = StationListener(deviceName: deviceName)
+        let listener = StationListener(deviceName: deviceName, identity: identity,
+                                       knownPeers: { PairingStore.knownPeerKeys() })
         listener.onError = { [weak self] error in
             self?.onEvent?(.failed(error.localizedDescription))
         }
         listener.onReady = { [weak self] port in
-            self?.onEvent?(.listening(code: pairingCode, salt: salt, port: port.rawValue))
+            self?.onEvent?(.listening(port: port.rawValue))
         }
         listener.onLink = { [weak self] link in
             guard let self else { return }
             self.link = link
-            link.onStateChange = { [weak self] state in
-                switch state {
-                case .failed(let reason): self?.onEvent?(.disconnected(reason: reason))
-                case .cancelled:          self?.onEvent?(.disconnected(reason: nil))
+            link.onPeerIdentity = { [weak self] key, known in
+                self?.pendingPeerIdentity = known ? nil : key
+                self?.pendingPeerName = PairingStore.peer(withKey: key)?.name
+            }
+            link.onPhase = { [weak self] phase in
+                switch phase {
+                case .awaitingConfirmation(let sas): self?.onEvent?(.needsConfirmation(sas: sas))
+                case .failed(let reason):            self?.onEvent?(.disconnected(reason: reason))
+                case .cancelled:                     self?.onEvent?(.disconnected(reason: nil))
                 default: break
                 }
             }
             link.onMessage = { [weak self] type, payload in
                 self?.handleIncoming(type: type, payload: payload, link: link, screens: screens)
             }
+            link.start()
         }
         do {
-            try listener.start(credential: .code(pairingCode), salt: salt)
+            try listener.start()
             self.listener = listener
         } catch {
             onEvent?(.failed(error.localizedDescription))
@@ -87,6 +119,7 @@ public final class SessionController: @unchecked Sendable {
         switch type {
         case .hello:
             let name = (try? JSONDecoder().decode(Hello.self, from: payload))?.deviceName ?? "Mac"
+            pendingPeerName = name
             onEvent?(.connected(peerName: name))
             // The primary needs our geometry to scale pointer motion correctly.
             try? link.send(.screens, json: screens)
@@ -112,23 +145,27 @@ public final class SessionController: @unchecked Sendable {
     // MARK: - Primary
 
     /// Connect to a peer and forward input when the pointer crosses `edge`.
-    public func startSending(host: String, port: UInt16, code: String, salt: Data, edge: ScreenEdge) {
+    public func startSending(host: String, port: UInt16, edge: ScreenEdge,
+                             expectedPeerIdentity: Data? = nil) {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             onEvent?(.failed("Invalid port \(port)"))
             return
         }
         startSending(endpoint: .hostPort(host: NWEndpoint.Host(host), port: nwPort),
-                     code: code, salt: salt, edge: edge)
+                     edge: edge, expectedPeerIdentity: expectedPeerIdentity)
     }
 
     /// Connect to a peer discovered over Bonjour.
-    public func startSending(endpoint: NWEndpoint, code: String, salt: Data, edge: ScreenEdge) {
+    public func startSending(endpoint: NWEndpoint, edge: ScreenEdge,
+                             expectedPeerIdentity: Data? = nil) {
         stop()
         peerID = UUID()
+        pendingEdge = edge
         let capture = EventCapture(layout: Layout(placements: [edge: peerID]))
         self.capture = capture
 
-        let link = StationLink(endpoint: endpoint, credential: .code(code), salt: salt)
+        let link = StationLink(endpoint: endpoint, identity: identity,
+                               expectedPeerIdentity: expectedPeerIdentity)
         self.link = link
 
         capture.onEvent = { [weak link] event in link?.send(.input, event.encode()) }
@@ -145,19 +182,24 @@ public final class SessionController: @unchecked Sendable {
             self?.onEvent?(.controlMoved(remote: false))
         }
 
-        link.onStateChange = { [weak self] state in
+        link.onPeerIdentity = { [weak self] key, known in
+            self?.pendingPeerIdentity = known ? nil : key
+        }
+        link.onPhase = { [weak self] phase in
             guard let self else { return }
-            switch state {
+            switch phase {
             case .ready:
                 try? link.send(.hello, json: Hello(deviceID: self.deviceID,
                                                    deviceName: self.deviceName,
                                                    role: .primary))
+            case .awaitingConfirmation(let sas):
+                self.onEvent?(.needsConfirmation(sas: sas))
             case .failed(let reason):
                 self.onEvent?(.failed(reason))
                 self.stop()
             case .cancelled:
                 self.onEvent?(.disconnected(reason: nil))
-            case .connecting:
+            case .connecting, .handshaking:
                 break
             }
         }

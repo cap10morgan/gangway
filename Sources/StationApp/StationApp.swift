@@ -172,10 +172,6 @@ struct IdleSection: View {
                 }
                 .font(.caption)
 
-                TextField("6-digit code", text: $model.enteredCode)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-
                 ForEach(model.peers) { peer in
                     if let reason = model.unusableReason(for: peer) {
                         Label("\(peer.name) — \(reason)", systemImage: "exclamationmark.triangle")
@@ -187,7 +183,7 @@ struct IdleSection: View {
                         } label: {
                             Label(peer.name, systemImage: "display")
                         }
-                        .disabled(model.enteredCode.count != Pairing.codeDigits)
+
                     }
                 }
             }
@@ -201,23 +197,52 @@ struct ReceivingSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let code = model.pairingCode {
-                Text("Enter this code on the other Mac")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(code)
-                    .font(.system(size: 30, weight: .semibold, design: .monospaced))
-                    .kerning(4)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-            }
-            if let peer = model.connectedPeer {
+            if let sas = model.confirmationCode {
+                ConfirmationPrompt(sas: sas,
+                                   confirm: { model.confirmPairing() },
+                                   reject: { model.rejectPairing() })
+            } else if let peer = model.connectedPeer {
                 Label("Controlled by \(peer)", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.callout)
+            } else {
+                Text("Waiting for another Mac to connect…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(12)
+    }
+}
+
+/// First-pairing check. The digits are a comparison value, not a secret: an attacker
+/// who sees them gains nothing. What they prove is that nobody is interposed, because a
+/// machine-in-the-middle would have to run two separate exchanges and could not make
+/// both Macs display the same value.
+struct ConfirmationPrompt: View {
+    let sas: String
+    let confirm: () -> Void
+    let reject: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Does the other Mac show these digits?")
+                .font(.subheadline).bold()
+            Text(sas)
+                .font(.system(size: 34, weight: .semibold, design: .monospaced))
+                .kerning(6)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            Text("If they differ, someone may be intercepting the connection. Do not pair.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("They match — pair", action: confirm)
+                    .keyboardShortcut(.defaultAction)
+                Button("They differ", action: reject)
+            }
+        }
     }
 }
 
@@ -226,21 +251,27 @@ struct SendingSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let peer = model.connectedPeer {
+            if let sas = model.confirmationCode {
+                ConfirmationPrompt(sas: sas,
+                                   confirm: { model.confirmPairing() },
+                                   reject: { model.rejectPairing() })
+            } else if let peer = model.connectedPeer {
                 Label("Connected to \(peer)", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.callout)
             }
-            Text(model.controlIsRemote
-                 ? "Input is going to the other Mac."
-                 : "Move the pointer off the \(model.edge.rawValue) edge to take over.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if model.confirmationCode == nil {
+                Text(model.controlIsRemote
+                     ? "Input is going to the other Mac."
+                     : "Move the pointer off the \(model.edge.rawValue) edge to take over.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Label("Control-Option-Escape returns control here", systemImage: "keyboard")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                Label("Control-Option-Escape returns control here", systemImage: "keyboard")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(12)
     }

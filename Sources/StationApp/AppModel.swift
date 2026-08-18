@@ -21,10 +21,9 @@ final class AppModel {
     var peers: [DiscoveredPeer] = []
     var edge: ScreenEdge = .right
 
-    /// Shown while waiting to be paired, so the user can read it off the screen.
-    var pairingCode: String?
-    /// Code the user types when connecting to a peer.
-    var enteredCode = ""
+    /// Six digits both Macs display during a first pairing. The user confirms they
+    /// match; this is a comparison, never a secret.
+    var confirmationCode: String?
 
     var connectedPeer: String?
     var controlIsRemote = false
@@ -136,19 +135,13 @@ final class AppModel {
             lastError = "Grant Accessibility and Input Monitoring first."
             return
         }
-        guard let salt = peer.salt else {
-            lastError = "\(peer.name) is not advertising pairing information."
-            return
-        }
-        guard enteredCode.count == Pairing.codeDigits else {
-            lastError = "Enter the \(Pairing.codeDigits)-digit code shown on \(peer.name)."
-            return
-        }
         let session = makeSession()
         self.session = session
         mode = .sending
         statusMessage = "Connecting to \(peer.name)…"
-        session.startSending(endpoint: peer.endpoint, code: enteredCode, salt: salt, edge: edge)
+        // A previously pinned identity authenticates without any user interaction.
+        let pinned = PairingStore.peers().first { $0.name == peer.name }?.publicKey
+        session.startSending(endpoint: peer.endpoint, edge: edge, expectedPeerIdentity: pinned)
     }
 
     func stop() {
@@ -157,11 +150,23 @@ final class AppModel {
         mode = .idle
         connectedPeer = nil
         controlIsRemote = false
-        pairingCode = nil
+        confirmationCode = nil
         statusMessage = "Not running"
     }
 
     func stopDiscovery() { browser.stop() }
+
+    /// The user has checked the six digits match on both Macs.
+    func confirmPairing() {
+        session?.confirmPairing()
+        confirmationCode = nil
+    }
+
+    /// The digits did not match, which means something is interposed. Tear down.
+    func rejectPairing() {
+        lastError = "The codes did not match. Someone may be intercepting the connection."
+        stop()
+    }
 
     /// Why a discovered peer cannot be used, or nil if it is usable.
     func unusableReason(for peer: DiscoveredPeer) -> String? {
@@ -186,12 +191,16 @@ final class AppModel {
 
     private func apply(_ event: SessionController.Event) {
         switch event {
-        case .listening(let code, _, _):
-            pairingCode = code
+        case .listening:
             statusMessage = "Waiting for a Mac to connect"
+        case .needsConfirmation(let sas):
+            confirmationCode = sas
+            statusMessage = "Confirm the code matches"
+        case .paired(let peerName):
+            confirmationCode = nil
+            statusMessage = "Paired with \(peerName)"
         case .connected(let peerName):
             connectedPeer = peerName
-            pairingCode = nil
             statusMessage = "Connected to \(peerName)"
         case .disconnected(let reason):
             connectedPeer = nil

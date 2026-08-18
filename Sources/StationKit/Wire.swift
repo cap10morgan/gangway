@@ -20,6 +20,12 @@ public enum MessageType: UInt8, Sendable {
     case input       = 0x10
     case enterScreen = 0x11
     case leaveScreen = 0x12
+
+    // Handshake. These are the only frames sent outside the encrypted channel;
+    // everything else is wrapped in `.encrypted`.
+    case hsEphemeral = 0x60
+    case hsIdentity  = 0x61
+    case encrypted   = 0x62
 }
 
 public let stationProtocolVersion = 1

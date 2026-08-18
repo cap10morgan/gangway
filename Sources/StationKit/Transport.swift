@@ -4,24 +4,12 @@ import Network
 public let stationBonjourType = "_station._tcp"
 
 /// Builds the Network.framework parameter stack shared by both ends.
+///
+/// Plain TCP: confidentiality and authentication come from `SecureChannel`, not TLS.
+/// The previous TLS-PSK arrangement required a shared secret before the connection
+/// existed, which forced a low-entropy typed code and an offline-guessable handshake.
 enum TransportParameters {
-    /// The TLS-PSK identity is the server's lookup key for the pre-shared key, so it
-    /// must be byte-identical on both ends; a per-device value fails the handshake
-    /// with `-9864 unknown PSK identity`. It is not secret and carries no peer
-    /// information. Peers identify themselves in `Hello`, after the channel is
-    /// encrypted, which is the correct layer for it.
-    static let pskIdentity = Data("station-psk-v1".utf8)
-
-    static func make(psk: Data) -> NWParameters {
-        let tls = NWProtocolTLS.Options()
-        let sec = tls.securityProtocolOptions
-
-        let pskData = psk.withUnsafeBytes { DispatchData(bytes: $0) }
-        let identityData = pskIdentity.withUnsafeBytes { DispatchData(bytes: $0) }
-        sec_protocol_options_add_pre_shared_key(sec, pskData as __DispatchData, identityData as __DispatchData)
-        sec_protocol_options_append_tls_ciphersuite(sec, tls_ciphersuite_t.AES_128_GCM_SHA256)
-        sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv12)
-
+    static func make() -> NWParameters {
         let tcp = NWProtocolTCP.Options()
         // Input forwarding is a latency game, not a throughput game. Nagle would
         // coalesce our tiny event frames and add up to 40ms of visible cursor lag.
@@ -30,49 +18,68 @@ enum TransportParameters {
         tcp.keepaliveIdle = 2
         tcp.keepaliveCount = 3
         tcp.keepaliveInterval = 1
-        // Drop a wedged peer quickly so the primary can release the cursor.
         tcp.connectionTimeout = 5
 
-        let params = NWParameters(tls: tls, tcp: tcp)
+        let params = NWParameters(tls: nil, tcp: tcp)
         params.includePeerToPeer = true
         params.serviceClass = .interactiveVoice   // prioritize on congested Wi-Fi
         return params
     }
 }
 
-public enum LinkState: Sendable, Equatable {
+public enum LinkPhase: Sendable, Equatable {
     case connecting
+    case handshaking
+    /// Both Macs must display this and the user must confirm they match. Only reached
+    /// on first pairing; a known peer authenticates with its pinned identity instead.
+    case awaitingConfirmation(sas: String)
     case ready
     case failed(String)
     case cancelled
 }
 
-/// A framed, authenticated, encrypted connection to one peer.
-///
-/// Not an actor: `NWConnection` already serializes onto the queue we hand it, and the
-/// send path is on the input hot path where actor hops would add avoidable latency.
+/// An authenticated, encrypted connection to one peer.
 public final class StationLink: @unchecked Sendable {
     private let connection: NWConnection
     private let queue: DispatchQueue
+    private let role: HandshakeRole
+    private let handshake: Handshake
     private var decoder = FrameDecoder()
     private let lock = NSLock()
 
+    private var sendCipher: CipherState?
+    private var receiveCipher: CipherState?
+    private var outcome: HandshakeOutcome?
+    private var confirmed = false
+    /// Set once a terminal phase has been reported, so consumers see it exactly once.
+    private var finished = false
+    /// App messages queued while the handshake or user confirmation is outstanding.
+    private var pendingOutbound: [(MessageType, Data)] = []
+
     public var onMessage: (@Sendable (MessageType, Data) -> Void)?
-    public var onStateChange: (@Sendable (LinkState) -> Void)?
+    public var onPhase: (@Sendable (LinkPhase) -> Void)?
     public var onError: (@Sendable (Error) -> Void)?
+    /// Peer's long-term public key and whether it matched a pinned one.
+    public var onPeerIdentity: (@Sendable (Data, Bool) -> Void)?
 
     public var endpointDescription: String { String(describing: connection.endpoint) }
 
-    init(connection: NWConnection, queue: DispatchQueue) {
+    init(connection: NWConnection, queue: DispatchQueue,
+         role: HandshakeRole, identity: Identity, expectedPeerIdentity: Data?) {
         self.connection = connection
         self.queue = queue
+        self.role = role
+        self.handshake = Handshake(role: role, identity: identity,
+                                   expectedPeerIdentity: expectedPeerIdentity)
     }
 
     /// Dial a discovered peer.
-    public convenience init(endpoint: NWEndpoint, credential: PairingCredential, salt: Data,
+    public convenience init(endpoint: NWEndpoint, identity: Identity,
+                            expectedPeerIdentity: Data? = nil,
                             queue: DispatchQueue = .global(qos: .userInteractive)) {
-        let params = TransportParameters.make(psk: credential.psk(salt: salt))
-        self.init(connection: NWConnection(to: endpoint, using: params), queue: queue)
+        self.init(connection: NWConnection(to: endpoint, using: TransportParameters.make()),
+                  queue: queue, role: .initiator, identity: identity,
+                  expectedPeerIdentity: expectedPeerIdentity)
     }
 
     public func start() {
@@ -80,26 +87,21 @@ public final class StationLink: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                self.onStateChange?(.ready)
+                self.onPhase?(.handshaking)
                 self.receiveLoop()
+                // The initiator opens the handshake; the responder answers.
+                if self.role == .initiator {
+                    self.sendRaw(.hsEphemeral, self.handshake.ephemeralMessage())
+                }
             case .waiting(let error):
                 self.onError?(error)
-                // Network.framework parks a failed TLS handshake in `.waiting` and
-                // retries indefinitely. A wrong pairing code is never going to start
-                // working, so surface it immediately instead of spinning forever.
-                // Transport-level problems (no route, refused) stay retryable.
-                if case .tls(let status) = error {
-                    self.onStateChange?(.failed(Self.describeTLS(status)))
-                    self.connection.cancel()
-                } else {
-                    self.onStateChange?(.connecting)
-                }
+                self.onPhase?(.connecting)
             case .failed(let error):
-                self.onStateChange?(.failed(error.localizedDescription))
+                self.finish(.failed(error.localizedDescription))
             case .cancelled:
-                self.onStateChange?(.cancelled)
+                self.finish(.cancelled)
             case .preparing, .setup:
-                self.onStateChange?(.connecting)
+                self.onPhase?(.connecting)
             @unknown default:
                 break
             }
@@ -111,25 +113,48 @@ public final class StationLink: @unchecked Sendable {
         connection.cancel()
     }
 
+    /// Call once the user has confirmed the SAS matches on both Macs.
+    public func confirmPairing() {
+        lock.lock()
+        confirmed = true
+        let queued = pendingOutbound
+        pendingOutbound.removeAll()
+        lock.unlock()
+        onPhase?(.ready)
+        for (type, payload) in queued { send(type, payload) }
+    }
+
+    // MARK: - Sending
+
     public func send(_ type: MessageType, _ payload: Data) {
-        connection.send(content: Framing.frame(type, payload),
-                        completion: .contentProcessed { [weak self] error in
-            if let error { self?.onError?(error) }
-        })
+        lock.lock()
+        let ready = confirmed && sendCipher != nil
+        if !ready {
+            // Never drop app messages that arrive mid-handshake; deliver them in order
+            // once the channel opens.
+            pendingOutbound.append((type, payload))
+            lock.unlock()
+            return
+        }
+        let cipher = sendCipher!
+        lock.unlock()
+
+        guard let sealed = try? cipher.seal(Framing.frame(type, payload)) else { return }
+        sendRaw(.encrypted, sealed)
     }
 
     public func send<T: Encodable>(_ type: MessageType, json value: T) throws {
         send(type, try JSONEncoder().encode(value))
     }
 
-    /// Map the TLS status codes a user can actually cause to plain language.
-    static func describeTLS(_ status: OSStatus) -> String {
-        switch status {
-        case -9820, -9846: return "Incorrect pairing code"
-        case -9864:        return "Pairing key mismatch"
-        default:           return "Secure connection failed (\(status))"
-        }
+    private func sendRaw(_ type: MessageType, _ payload: Data) {
+        connection.send(content: Framing.frame(type, payload),
+                        completion: .contentProcessed { [weak self] error in
+            if let error { self?.onError?(error) }
+        })
     }
+
+    // MARK: - Receiving
 
     private func receiveLoop() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
@@ -139,22 +164,20 @@ public final class StationLink: @unchecked Sendable {
             if let content, !content.isEmpty {
                 self.lock.lock()
                 self.decoder.append(content)
-                var drained: [(MessageType, Data)] = []
+                var frames: [(MessageType, Data)] = []
                 var thrown: Error?
                 while true {
                     do {
                         guard let frame = try self.decoder.next() else { break }
-                        drained.append(frame)
+                        frames.append(frame)
                     } catch {
-                        // An unknown message type is skipped by the decoder, so keep
-                        // draining; a size violation is fatal and ends the loop.
                         thrown = error
                         if case FramingError.frameTooLarge = error { break }
                     }
                 }
                 self.lock.unlock()
 
-                for (type, payload) in drained { self.onMessage?(type, payload) }
+                for frame in frames { self.handleFrame(frame.0, frame.1) }
                 if let thrown {
                     self.onError?(thrown)
                     if case FramingError.frameTooLarge = thrown {
@@ -165,7 +188,7 @@ public final class StationLink: @unchecked Sendable {
             }
 
             if let error {
-                self.onStateChange?(.failed(error.localizedDescription))
+                self.finish(.failed(error.localizedDescription))
                 return
             }
             if isComplete {
@@ -175,6 +198,85 @@ public final class StationLink: @unchecked Sendable {
             self.receiveLoop()
         }
     }
+
+    private func handleFrame(_ type: MessageType, _ payload: Data) {
+        switch type {
+        case .hsEphemeral:
+            do {
+                try handshake.receiveEphemeral(payload)
+                if role == .responder {
+                    sendRaw(.hsEphemeral, handshake.ephemeralMessage())
+                }
+                sendRaw(.hsIdentity, try handshake.identityMessage())
+            } catch {
+                fail(error)
+            }
+
+        case .hsIdentity:
+            do {
+                let result = try handshake.receiveIdentity(payload)
+                lock.lock()
+                outcome = result
+                sendCipher = CipherState(key: result.sendKey)
+                receiveCipher = CipherState(key: result.receiveKey)
+                lock.unlock()
+
+                onPeerIdentity?(result.peerIdentity, result.wasAlreadyKnown)
+                if result.wasAlreadyKnown {
+                    // Pinned identity already proves who this is; no user step needed.
+                    confirmPairing()
+                } else {
+                    onPhase?(.awaitingConfirmation(sas: result.sas))
+                }
+            } catch {
+                fail(error)
+            }
+
+        case .encrypted:
+            lock.lock()
+            let cipher = receiveCipher
+            lock.unlock()
+            guard let cipher else { return fail(HandshakeError.wrongState) }
+            do {
+                let inner = try cipher.open(payload)
+                var innerDecoder = FrameDecoder()
+                innerDecoder.append(inner)
+                while let frame = try innerDecoder.next() {
+                    onMessage?(frame.type, frame.payload)
+                }
+            } catch {
+                // A frame that fails authentication means tampering or desync; the
+                // connection cannot be trusted to carry input after that.
+                fail(error)
+            }
+
+        default:
+            // Application messages must never arrive unencrypted.
+            fail(HandshakeError.wrongState)
+        }
+    }
+
+    private func fail(_ error: Error) {
+        lock.lock()
+        let alreadyFinished = finished
+        finished = true
+        lock.unlock()
+        guard !alreadyFinished else { return }
+
+        let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        onPhase?(.failed(message))
+        connection.cancel()
+    }
+
+    /// Report a terminal phase originating from the connection itself, once only.
+    private func finish(_ phase: LinkPhase) {
+        lock.lock()
+        let alreadyFinished = finished
+        finished = true
+        lock.unlock()
+        guard !alreadyFinished else { return }
+        onPhase?(phase)
+    }
 }
 
 /// Accepts incoming peer connections and advertises over Bonjour.
@@ -182,31 +284,33 @@ public final class StationListener: @unchecked Sendable {
     private var listener: NWListener?
     private let queue: DispatchQueue
     private let deviceName: String
+    private let identity: Identity
+    /// Look up a pinned identity for an incoming peer once it identifies itself.
+    private let knownPeers: @Sendable () -> [Data]
 
     public var onLink: (@Sendable (StationLink) -> Void)?
     public var onError: (@Sendable (Error) -> Void)?
-    /// Fires once the listener is actually bound and accepting connections.
     public var onReady: (@Sendable (NWEndpoint.Port) -> Void)?
 
-    public init(deviceName: String, queue: DispatchQueue = .global(qos: .userInteractive)) {
+    public init(deviceName: String, identity: Identity,
+                knownPeers: @escaping @Sendable () -> [Data] = { [] },
+                queue: DispatchQueue = .global(qos: .userInteractive)) {
         self.deviceName = deviceName
+        self.identity = identity
+        self.knownPeers = knownPeers
         self.queue = queue
     }
 
-    /// - Parameter credential: what an incoming peer must prove it knows. While the
-    ///   user has a pairing code on screen this is `.code`; otherwise `.longTerm`.
-    /// - Parameter salt: also published in the Bonjour TXT record. The salt cannot
-    ///   travel inside the encrypted channel because it is needed to derive the key
-    ///   that establishes it, so it is public by design. Publishing it means the user
-    ///   only ever types the six-digit code.
-    public func start(credential: PairingCredential, salt: Data, port: NWEndpoint.Port? = nil,
-                      advertise: Bool = true) throws {
-        let params = TransportParameters.make(psk: credential.psk(salt: salt))
-        let listener = try NWListener(using: params, on: port ?? .any)
+    public func start(port: NWEndpoint.Port? = nil, advertise: Bool = true) throws {
+        let listener = try NWListener(using: TransportParameters.make(), on: port ?? .any)
+
         if advertise {
             var txt = NWTXTRecord()
-            txt["salt"] = salt.map { String(format: "%02x", $0) }.joined()
             txt["v"] = String(stationProtocolVersion)
+            // The identity fingerprint lets a primary tell a re-paired Mac from a new
+            // one before connecting. It is a public key hash, not a secret.
+            txt["id"] = identity.publicKeyData.prefix(8)
+                .map { String(format: "%02x", $0) }.joined()
             listener.service = NWListener.Service(name: deviceName,
                                                  type: stationBonjourType,
                                                  txtRecord: txt.data)
@@ -214,19 +318,16 @@ public final class StationListener: @unchecked Sendable {
 
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
-            let link = StationLink(connection: connection, queue: self.queue)
+            let link = StationLink(connection: connection, queue: self.queue,
+                                   role: .responder, identity: self.identity,
+                                   expectedPeerIdentity: nil)
             self.onLink?(link)
             link.start()
         }
         listener.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                // `NWListener.port` is non-nil but zero until the listener actually
-                // binds, so callers must not read it before this point or they will
-                // dial port 0 and get EADDRNOTAVAIL.
-                if let port = self?.listener?.port, port != .any {
-                    self?.onReady?(port)
-                }
+                if let port = self?.listener?.port, port != .any { self?.onReady?(port) }
             case .failed(let error):
                 self?.onError?(error)
             default:
@@ -237,8 +338,8 @@ public final class StationListener: @unchecked Sendable {
         self.listener = listener
     }
 
-    /// The bound port, or nil until the listener is ready. Zero is treated as
-    /// "not yet bound" rather than reported as a usable port.
+    /// The bound port, or nil until the listener is ready. `NWListener.port` reads back
+    /// as zero rather than nil before binding, which would otherwise be dialled.
     public var port: NWEndpoint.Port? {
         guard let port = listener?.port, port != .any else { return nil }
         return port
@@ -323,7 +424,7 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         let peer = DiscoveredPeer(name: service.name,
                                   host: host,
                                   port: UInt16(service.port),
-                                  salt: string("salt").flatMap(DiscoveredPeer.hexToData),
+                                  identityFingerprint: string("id"),
                                   protocolVersion: string("v").flatMap(Int.init))
         lock.lock()
         found[service.name] = peer
@@ -343,8 +444,9 @@ public struct DiscoveredPeer: Sendable, Equatable, Identifiable {
     public let name: String
     public let host: String
     public let port: UInt16
-    /// Pairing salt advertised by the peer.
-    public let salt: Data?
+    /// Short hash of the peer's long-term public key, advertised so a primary can tell
+    /// a re-installed Mac from a new one before connecting. Not a secret.
+    public let identityFingerprint: String?
     public let protocolVersion: Int?
     public var id: String { name }
 
@@ -355,14 +457,15 @@ public struct DiscoveredPeer: Sendable, Equatable, Identifiable {
     /// True when this peer speaks a protocol version we understand.
     public var isCompatible: Bool { protocolVersion == stationProtocolVersion }
 
-    /// True when we have everything needed to attempt pairing.
-    public var isPairable: Bool { salt != nil && port > 0 }
+    /// True when we have everything needed to attempt a connection.
+    public var isPairable: Bool { port > 0 }
 
-    public init(name: String, host: String, port: UInt16, salt: Data?, protocolVersion: Int?) {
+    public init(name: String, host: String, port: UInt16,
+                identityFingerprint: String?, protocolVersion: Int?) {
         self.name = name
         self.host = host
         self.port = port
-        self.salt = salt
+        self.identityFingerprint = identityFingerprint
         self.protocolVersion = protocolVersion
     }
 

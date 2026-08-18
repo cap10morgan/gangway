@@ -4,9 +4,8 @@ import CoreGraphics
 import StationKit
 import StationInput
 
-// Station command-line driver. `secondary` receives and injects, `primary` captures
-// and forwards. This is the full vertical slice without the GUI, which makes it the
-// fastest way to test real two-Mac behaviour and to diagnose the transport.
+// Station command-line driver. `secondary` receives and injects, `primary` captures and
+// forwards. Both drive the same SessionController the menu bar app uses.
 
 func log(_ tag: String, _ message: String) {
     let f = DateFormatter()
@@ -21,36 +20,30 @@ func flag(_ name: String) -> String? {
     return args[i + 1]
 }
 
-/// Pairing material the primary needs before TLS can be established. The salt cannot
-/// travel inside the encrypted channel because it is required to derive the key, so it
-/// is public by design. The GUI will publish it in the Bonjour TXT record; the CLI
-/// prints it for the user to copy.
-struct PairingString {
-    let code: String
-    let salt: Data
-
-    var encoded: String { "\(code).\(salt.map { String(format: "%02x", $0) }.joined())" }
-
-    init(code: String, salt: Data) {
-        self.code = code
-        self.salt = salt
-    }
-
-    init?(encoded: String) {
-        let parts = encoded.split(separator: ".")
-        guard parts.count == 2, parts[0].count == Pairing.codeDigits else { return nil }
-        let hex = String(parts[1])
-        guard hex.count % 2 == 0 else { return nil }
-        var bytes = Data()
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
+/// Show the SAS and wait for the user to confirm it matches the other Mac.
+///
+/// The digits are a comparison value, not a secret: an attacker who learns them gains
+/// nothing. What matters is that a machine-in-the-middle cannot make both Macs show the
+/// same value, so a mismatch means someone is interposed.
+func promptForConfirmation(_ sas: String, confirm: @escaping @Sendable () -> Void) {
+    print("")
+    print("  ┌──────────────────────────────────────────────┐")
+    print("  │  Confirm this matches the OTHER Mac:          │")
+    print("  │                                              │")
+    print("  │                  \(sas)                      │")
+    print("  │                                              │")
+    print("  │  Type  yes  to pair, anything else to abort.  │")
+    print("  └──────────────────────────────────────────────┘")
+    print("")
+    fflush(stdout)
+    DispatchQueue.global().async {
+        let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if answer == "yes" || answer == "y" {
+            confirm()
+        } else {
+            log("pairing", "ABORTED — codes did not match")
+            exit(1)
         }
-        self.code = String(parts[0])
-        self.salt = bytes
     }
 }
 
@@ -58,27 +51,24 @@ let command = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "help
 
 switch command {
 
-// MARK: - secondary: receive and inject
-
 case "secondary":
     let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
     session.installTerminationHandlers()
-    nonisolated(unsafe) var advertised = false
 
     session.onEvent = { event in
         switch event {
-        case .listening(let code, let salt, let port):
-            let pair = PairingString(code: code, salt: salt).encoded
+        case .listening(let port):
             log("secondary", "listening on port \(port)")
-            if !advertised {
-                advertised = true
-                print("")
-                print("  Run this on the primary Mac:")
-                print("    stationctl primary --host <this-mac-ip> --port \(port) --pair \(pair) --edge right")
-                print("")
-            }
-        case .connected(let peerName):
-            log("secondary", "primary connected: \(peerName)")
+            print("")
+            print("  Run on the primary Mac:")
+            print("    stationctl primary --host <this-mac-ip> --port \(port) --edge right")
+            print("")
+        case .needsConfirmation(let sas):
+            promptForConfirmation(sas) { session.confirmPairing() }
+        case .paired(let name):
+            log("secondary", "PAIRED with \(name) — future connections need no confirmation")
+        case .connected(let name):
+            log("secondary", "primary connected: \(name)")
         case .disconnected(let reason):
             log("secondary", "disconnected\(reason.map { ": \($0)" } ?? "")")
         case .controlMoved(let remote):
@@ -89,33 +79,38 @@ case "secondary":
             log("secondary", "failed: \(message)")
         }
     }
-    log("secondary", "displays: \(ScreenGeometry.localScreens().screens.count), "
-                   + "bounds \(ScreenGeometry.globalBounds)")
-    session.startReceiving(code: flag("code"))
+    log("secondary", "identity \(session.publicIdentity.prefix(4).map { String(format: "%02x", $0) }.joined())")
+    log("secondary", "displays: \(ScreenGeometry.localScreens().screens.count), bounds \(ScreenGeometry.globalBounds)")
+    session.startReceiving()
     CFRunLoopRun()
 
-// MARK: - primary: capture and forward
-
 case "primary":
-    guard let host = flag("host"), let portString = flag("port"), let port = UInt16(portString),
-          let pairString = flag("pair"), let pairing = PairingString(encoded: pairString) else {
-        print("usage: stationctl primary --host <ip> --port <port> --pair <code.salt> [--edge right]")
+    guard let host = flag("host"), let portString = flag("port"), let port = UInt16(portString) else {
+        print("usage: stationctl primary --host <ip> --port <port> [--edge right]")
         exit(2)
     }
     let edge = ScreenEdge(rawValue: flag("edge") ?? "right") ?? .right
     let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
     session.installTerminationHandlers()
 
+    // Reuse a pinned identity for this peer if we have paired with it before.
+    let known = PairingStore.peers().first
+    if known != nil { log("primary", "using pinned identity for \(known!.name)") }
+
     session.onEvent = { event in
         switch event {
+        case .needsConfirmation(let sas):
+            promptForConfirmation(sas) { session.confirmPairing() }
+        case .paired(let name):
+            log("primary", "PAIRED with \(name)")
         case .armed:
             log("primary", "capture ARMED")
             print("")
             print("  Move the pointer off the \(edge.rawValue) edge to take over the peer.")
             print("  Control-Option-Escape forces control back at any time.")
             print("")
-        case .connected(let peerName):
-            log("primary", "connected to \(peerName)")
+        case .connected(let name):
+            log("primary", "connected to \(name)")
         case .controlMoved(let remote):
             log("primary", remote ? "control -> PEER" : "control -> LOCAL")
         case .disconnected(let reason):
@@ -127,24 +122,21 @@ case "primary":
             break
         }
     }
+    log("primary", "identity \(session.publicIdentity.prefix(4).map { String(format: "%02x", $0) }.joined())")
     log("primary", "local bounds \(ScreenGeometry.globalBounds), peer on \(edge.rawValue) edge")
-    session.startSending(host: host, port: port, code: pairing.code, salt: pairing.salt, edge: edge)
+    session.startSending(host: host, port: port, edge: edge,
+                         expectedPeerIdentity: known?.publicKey)
     CFRunLoopRun()
 
 case "discover":
-    // Browse for peers and report exactly what was resolved, including whether the
-    // pairing salt came through. Empty output means discovery, not pairing, is at fault.
     let browser = PeerBrowser()
     browser.onPeersChanged = { peers in
-        if peers.isEmpty {
-            log("discover", "no peers")
-            return
-        }
+        if peers.isEmpty { log("discover", "no peers"); return }
         for p in peers {
             log("discover", "\(p.name) at \(p.host):\(p.port) "
-                          + "salt=\(p.salt.map { "\($0.count)B" } ?? "MISSING") "
+                          + "id=\(p.identityFingerprint ?? "MISSING") "
                           + "v=\(p.protocolVersion.map(String.init) ?? "MISSING") "
-                          + "compatible=\(p.isCompatible) pairable=\(p.isPairable)")
+                          + "compatible=\(p.isCompatible)")
         }
     }
     browser.start()
@@ -153,34 +145,43 @@ case "discover":
     CFRunLoopRun()
 
 case "probe":
-    // Loopback transport check: pairing, framing, and an opaque gesture blob.
-    let salt = Pairing.generateSalt()
-    let credential = PairingCredential.code("123456")
+    // Loopback check of the handshake, encryption, and framing.
+    let serverIdentity = Identity.generate()
+    let clientIdentity = Identity.generate()
     nonisolated(unsafe) var serverLink: StationLink?
-    let listener = StationListener(deviceName: "probe-primary")
+
+    let listener = StationListener(deviceName: "probe-secondary", identity: serverIdentity)
     listener.onError = { log("listener", "error: \($0)") }
     listener.onLink = { link in
         serverLink = link
-        link.onStateChange = { log("server", "state \($0)") }
+        link.onPhase = { phase in
+            log("server", "phase \(phase)")
+            if case .awaitingConfirmation = phase { link.confirmPairing() }
+        }
         link.onMessage = { type, data in
             log("server", "recv \(type) \(data.count) bytes")
             if type == .input, let event = InputEvent.decode(data) {
                 log("server", "  -> type=\(event.eventType) blob=\(event.eventData.count)B")
+                log("probe", "SUCCESS: encrypted channel carried an opaque gesture blob")
                 exit(0)
             }
         }
     }
-    try! listener.start(credential: credential, salt: salt, advertise: false)
+    try! listener.start(advertise: false)
     var bound: NWEndpoint.Port?
     for _ in 0..<200 { if let p = listener.port { bound = p; break }; usleep(50_000) }
     guard let bound else { log("listener", "never bound"); exit(1) }
     log("listener", "bound on \(bound)")
 
     let client = StationLink(endpoint: .hostPort(host: "127.0.0.1", port: bound),
-                             credential: credential, salt: salt)
-    client.onStateChange = { state in
-        log("client", "state \(state)")
-        if state == .ready {
+                             identity: clientIdentity)
+    client.onPhase = { phase in
+        log("client", "phase \(phase)")
+        if case .awaitingConfirmation(let sas) = phase {
+            log("client", "SAS \(sas)")
+            client.confirmPairing()
+        }
+        if phase == .ready {
             let blob = Data((0..<260).map { UInt8($0 % 256) })
             client.send(.input, InputEvent(eventType: 29, normalizedX: 0.5, normalizedY: 0.25,
                                            deltaX: 1.5, deltaY: -2.5, eventData: blob).encode())
@@ -192,8 +193,6 @@ case "probe":
     dispatchMain()
 
 case "cursor-selftest":
-    // Verifies that a hidden cursor is restored on exit. A leaked hide leaves the user
-    // with no pointer, so this path is worth being able to check on demand.
     let mode = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "exit"
     CursorControl.installSafetyNet()
     log("cursor", "background hiding available: \(CursorControl.canHideInBackground)")
@@ -201,15 +200,12 @@ case "cursor-selftest":
     log("cursor", "hidden; mode=\(mode)")
     switch mode {
     case "exit":
-        // Normal termination: atexit must unhide.
         log("cursor", "exiting normally in 2s")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { exit(0) }
     case "signal":
-        // Wait to be signalled; the DispatchSource handler must unhide.
         log("cursor", "waiting for SIGTERM")
     default:
-        log("cursor", "unknown mode")
-        exit(2)
+        log("cursor", "unknown mode"); exit(2)
     }
     CFRunLoopRun()
 
@@ -217,10 +213,10 @@ default:
     print("""
     stationctl — Station command-line driver
 
-      stationctl secondary [--code 123456]
-          Receive and inject input. Prints the pairing string to use on the primary.
+      stationctl secondary
+          Receive and inject input. Prints the port to use on the primary.
 
-      stationctl primary --host <ip> --port <port> --pair <code.salt> [--edge right]
+      stationctl primary --host <ip> --port <port> [--edge right]
           Capture input and forward it when the pointer crosses the given edge.
           Control-Option-Escape always returns control locally.
 
@@ -228,9 +224,12 @@ default:
           Browse for Station peers and report what resolved.
 
       stationctl probe
-          Loopback transport self-test.
+          Loopback handshake and transport self-test.
 
       stationctl cursor-selftest [exit|signal]
           Hide the cursor, then verify it is restored on that exit path.
+
+    First pairing shows six digits on both Macs. They are a comparison, not a
+    secret: confirm they match and the peer identity is pinned for future use.
     """)
 }
