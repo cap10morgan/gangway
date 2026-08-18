@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CoreGraphics
+import AppKit
 import StationKit
 import StationInput
 
@@ -298,8 +299,38 @@ case "dock-test":
     sleep(1)
     rest()
 
+    log("dock", "[4/4] CGEventPostToPid, delivered straight to the Dock process ...")
+    // The Dock decides its own reveal. Session-level posts are evidently filtered for
+    // edge behaviour, but an event addressed to a specific process takes a different
+    // delivery path and may still be seen.
+    let dockPid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
+        .first?.processIdentifier
+    if let dockPid {
+        log("dock", "Dock pid \(dockPid)")
+        for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
+            if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                               mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left) {
+                e.postToPid(dockPid)
+            }
+            usleep(12_000)
+        }
+        for _ in 0..<30 {
+            if let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                               mouseCursorPosition: edge, mouseButton: .left) {
+                e.setIntegerValueField(.mouseEventDeltaY, value: 2)
+                e.postToPid(dockPid)
+            }
+            usleep(50_000)
+        }
+        sleep(1)
+        rest()
+    } else {
+        log("dock", "could not find the Dock process")
+    }
+
     print("")
-    log("dock", "which step, if any, revealed the Dock? (1 posted, 2 warp, 3 display-move)")
+    log("dock", "which step, if any, revealed the Dock?")
+    log("dock", "1 posted, 2 warp, 3 display-move, 4 post-to-Dock")
     exit(0)
 
 case "discover":
