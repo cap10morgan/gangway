@@ -57,9 +57,32 @@ final class AppModel {
     /// nagging: on later launches the calls are silent no-ops.
     private func registerWithTCCIfNeeded() {
         let current = Permissions.current()
-        if !current.inputMonitoring { Permissions.requestInputMonitoring() }
-        if !current.accessibility { Permissions.requestAccessibility() }
-        permissions = Permissions.current()
+        permissions = current
+        guard !current.allGranted else { return }
+
+        // Stagger the two requests. Firing both in the same turn of the run loop races
+        // the two prompts against each other and one can be dropped, which leaves that
+        // permission unregistered and absent from System Settings.
+        if !current.inputMonitoring {
+            Permissions.requestInputMonitoring()
+        }
+        if !current.accessibility {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                Permissions.requestAccessibility()
+            }
+        }
+    }
+
+    /// Some TCC changes are only picked up cleanly by a fresh process. Offered as a
+    /// fallback so a user who has granted everything but still sees "not granted" has
+    /// an obvious way forward rather than a dead end.
+    func relaunch() {
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            Task { @MainActor in NSApplication.shared.terminate(nil) }
+        }
     }
 
     /// Grants are made in System Settings, in another process, with no notification

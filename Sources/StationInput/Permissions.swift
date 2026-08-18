@@ -20,18 +20,23 @@ public struct Permissions: Equatable, Sendable {
         self.inputMonitoring = inputMonitoring
     }
 
+    /// Uses the dedicated CoreGraphics preflight calls rather than
+    /// `AXIsProcessTrusted()`. `AXIsProcessTrusted` caches its answer for the life of
+    /// the process, so an app that is running when the user flips the switch in System
+    /// Settings keeps reporting "not granted" until it is relaunched.
+    /// `CGPreflightPostEventAccess` reflects the change immediately and, being the
+    /// permission that actually gates `CGEventPost`, is what we truly depend on.
     public static func current() -> Permissions {
-        Permissions(accessibility: AXIsProcessTrusted(),
+        Permissions(accessibility: CGPreflightPostEventAccess(),
                     inputMonitoring: CGPreflightListenEventAccess())
     }
 
-    /// Ask for Accessibility, prompting the user.
+    /// Ask for permission to post events, which appears to the user as Accessibility.
+    /// Calling this is what registers Station in the System Settings list; preflighting
+    /// alone registers nothing.
     @discardableResult
     public static func requestAccessibility() -> Bool {
-        // The literal key rather than kAXTrustedCheckOptionPrompt: the imported global
-        // is a mutable var and so is not concurrency-safe under Swift 6.
-        let options = ["AXTrustedCheckOptionPrompt": true]
-        return AXIsProcessTrustedWithOptions(options as CFDictionary)
+        CGRequestPostEventAccess()
     }
 
     /// Ask for Input Monitoring. macOS shows this prompt only once per app version;

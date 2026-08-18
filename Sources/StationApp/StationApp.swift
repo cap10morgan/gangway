@@ -109,8 +109,14 @@ struct PermissionsSection: View {
                           request: { Permissions.requestInputMonitoring() },
                           openSettings: { Permissions.openInputMonitoringSettings() })
 
-            Button("Check again") { model.refreshPermissions() }
-                .controlSize(.small)
+            HStack(spacing: 8) {
+                Button("Check again") { model.refreshPermissions() }
+                    .controlSize(.small)
+                // A granted permission that still reads as missing usually clears with
+                // a fresh process.
+                Button("Relaunch Station") { model.relaunch() }
+                    .controlSize(.small)
+            }
         }
         .padding(12)
     }
