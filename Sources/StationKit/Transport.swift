@@ -3,6 +3,16 @@ import Network
 
 public let stationBonjourType = "_station._tcp"
 
+/// Station listens here by default rather than on an ephemeral port.
+///
+/// An ephemeral port changes on every restart, so any Bonjour record that outlives the
+/// process points at a port nothing is listening on, and connecting to it fails with
+/// ECONNREFUSED. mDNS records routinely outlive a killed process by minutes, and a
+/// re-registered service takes a new name ("Mac (2)") while the dead entry lingers, so
+/// the user is offered a stale choice that cannot work. A fixed port makes a stale
+/// record harmless: it still points somewhere Station is listening.
+public let stationDefaultPort: UInt16 = 24801
+
 /// Builds the Network.framework parameter stack shared by both ends.
 ///
 /// Plain TCP: confidentiality and authentication come from `SecureChannel`, not TLS.
@@ -180,6 +190,15 @@ public final class StationLink: @unchecked Sendable {
     /// Local Network permission is by far the most common cause on macOS 15 and later,
     /// and it fails silently: the connection simply never completes.
     private static func unreachableMessage(_ reason: String?) -> String {
+        // ECONNREFUSED means we reached the Mac and it refused: the address is right but
+        // nothing is listening. That is a different problem from being unable to reach
+        // it at all, and deserves different advice.
+        if reason?.contains("ECONNREFUSED") == true || reason?.contains("61") == true {
+            return "The other Mac refused the connection. Station may not be set to "
+                 + "receive there, or this entry is left over from an earlier run. "
+                 + "Make sure Station is running and receiving on the other Mac, then "
+                 + "try again."
+        }
         var message = "Could not reach the other Mac"
         if let reason { message += " (\(reason))" }
         message += ". Check that Station is running and set to receive there, that both "
@@ -392,8 +411,16 @@ public final class StationListener: @unchecked Sendable {
         self.queue = queue
     }
 
+    /// - Parameter port: defaults to `stationDefaultPort`, falling back to an ephemeral
+    ///   port if it is already taken, so a second instance still runs.
     public func start(port: NWEndpoint.Port? = nil, advertise: Bool = true) throws {
-        let listener = try NWListener(using: TransportParameters.make(), on: port ?? .any)
+        let requested = port ?? NWEndpoint.Port(rawValue: stationDefaultPort) ?? .any
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: TransportParameters.make(), on: requested)
+        } catch {
+            listener = try NWListener(using: TransportParameters.make(), on: .any)
+        }
 
         if advertise {
             var txt = NWTXTRecord()
@@ -454,7 +481,12 @@ public final class PeerBrowser: NSObject, @unchecked Sendable {
     private let browser = NetServiceBrowser()
     /// Services must be retained while resolving or the resolve is abandoned.
     private var resolving: [NetService] = []
+    /// Keyed by host and port rather than service name. Bonjour renames a re-registered
+    /// service ("Mac (2)") while the dead record lingers, so keying by name would list
+    /// the same Mac twice and invite the user to pick the stale one.
     private var found: [String: DiscoveredPeer] = [:]
+
+    private static func key(host: String, port: UInt16) -> String { "\(host):\(port)" }
     private let lock = NSLock()
 
     public var onPeersChanged: (@Sendable ([DiscoveredPeer]) -> Void)?
@@ -500,7 +532,8 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
     public func netServiceBrowser(_ browser: NetServiceBrowser,
                                   didRemove service: NetService, moreComing: Bool) {
         lock.lock()
-        found.removeValue(forKey: service.name)
+        // The removed service may not have resolved, so match on name as well.
+        found = found.filter { $0.value.name != service.name }
         resolving.removeAll { $0 === service }
         lock.unlock()
         if !moreComing { publish() }
@@ -518,7 +551,16 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
                                   identityFingerprint: string("id"),
                                   protocolVersion: string("v").flatMap(Int.init))
         lock.lock()
-        found[service.name] = peer
+        // Prefer the shortest name for a given endpoint: Bonjour's "(2)" suffix marks a
+        // re-registration of the same Mac, not a different one.
+        let key = Self.key(host: host, port: peer.port)
+        if let existing = found[key], existing.name.count <= peer.name.count {
+            found[key] = DiscoveredPeer(name: existing.name, host: peer.host, port: peer.port,
+                                        identityFingerprint: peer.identityFingerprint,
+                                        protocolVersion: peer.protocolVersion)
+        } else {
+            found[key] = peer
+        }
         resolving.removeAll { $0 === service }
         lock.unlock()
         publish()
