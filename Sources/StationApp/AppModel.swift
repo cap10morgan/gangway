@@ -163,10 +163,36 @@ final class AppModel {
 
     func stopDiscovery() { browser.stop() }
 
+    /// Bring the confirmation in front of the user rather than hiding it in a menu.
+    private func presentConfirmation(_ sas: String) {
+        let alert = NSAlert()
+        alert.messageText = "Pair with the other Mac?"
+        alert.informativeText = """
+            Both Macs should be showing these digits:
+
+                    \(sas)
+
+            Confirm this on BOTH Macs to finish pairing. If the digits differ,             someone may be intercepting the connection — do not pair.
+            """
+        alert.addButton(withTitle: "They match — pair")
+        alert.addButton(withTitle: "They differ")
+        alert.alertStyle = .informational
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            confirmPairing()
+        } else {
+            rejectPairing()
+        }
+    }
+
     /// The user has checked the six digits match on both Macs.
     func confirmPairing() {
         session?.confirmPairing()
         confirmationCode = nil
+        // Confirming locally is only half of it. Input cannot flow until the other Mac
+        // confirms too, so do not imply the pairing is finished.
+        statusMessage = "Waiting for the other Mac to confirm…"
     }
 
     /// The digits did not match, which means something is interposed. Tear down.
@@ -211,6 +237,10 @@ final class AppModel {
         case .needsConfirmation(let sas):
             confirmationCode = sas
             statusMessage = "Confirm the code matches"
+            // Both Macs must confirm, and the menu bar popover only renders while it is
+            // open, so a user who never opens it never sees the prompt. The pairing then
+            // stalls with one side reporting success and the other silently waiting.
+            presentConfirmation(sas)
         case .paired(let peerName):
             confirmationCode = nil
             statusMessage = "Paired with \(peerName)"
