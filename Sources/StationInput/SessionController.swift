@@ -104,7 +104,9 @@ public final class SessionController: @unchecked Sendable {
             link.onMessage = { [weak self] type, payload in
                 self?.handleIncoming(type: type, payload: payload, link: link, screens: screens)
             }
-            link.start()
+            // Not started here: StationListener starts the link once handlers are set.
+            // Starting it twice runs two concurrent receive loops on one connection,
+            // which interleave reads and corrupt framing.
         }
         do {
             try listener.start()

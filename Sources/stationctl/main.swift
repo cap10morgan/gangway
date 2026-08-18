@@ -36,8 +36,21 @@ func promptForConfirmation(_ sas: String, confirm: @escaping @Sendable () -> Voi
     print("  └──────────────────────────────────────────────┘")
     print("")
     fflush(stdout)
+
+    // With no terminal attached, readLine() returns nil immediately. Treating that as a
+    // rejection would tear down a perfectly good connection, so hold instead and say
+    // what is needed. Never auto-confirm: that would defeat the check entirely.
+    guard isatty(FileHandle.standardInput.fileDescriptor) == 1 else {
+        log("pairing", "no terminal attached — run this in a terminal to confirm pairing")
+        return
+    }
+
     DispatchQueue.global().async {
-        let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let line = readLine() else {
+            log("pairing", "stdin closed before confirmation; connection left pending")
+            return
+        }
+        let answer = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if answer == "yes" || answer == "y" {
             confirm()
         } else {
@@ -127,6 +140,48 @@ case "primary":
     session.startSending(host: host, port: port, edge: edge,
                          expectedPeerIdentity: known?.publicKey)
     CFRunLoopRun()
+
+case "connect":
+    // Handshake against a running secondary without arming any input capture, so the
+    // connection path can be tested safely on a single Mac.
+    guard let host = flag("host"), let portString = flag("port"), let port = UInt16(portString),
+          let nwPort = NWEndpoint.Port(rawValue: port) else {
+        print("usage: stationctl connect --host <ip> --port <port>")
+        exit(2)
+    }
+    let identity = Identity.generate()
+    let link = StationLink(endpoint: .hostPort(host: NWEndpoint.Host(host), port: nwPort),
+                           identity: identity)
+    link.onError = { log("connect", "error: \($0)") }
+    link.onPeerIdentity = { key, known in
+        log("connect", "peer identity \(key.prefix(4).map { String(format: "%02x", $0) }.joined()) known=\(known)")
+    }
+    link.onMessage = { type, payload in
+        log("connect", "recv \(type) \(payload.count) bytes")
+        if type == .screens, let set = try? JSONDecoder().decode(ScreenSet.self, from: payload) {
+            log("connect", "peer screens: \(set.screens.count), bounds \(set.bounds)")
+            log("connect", "SUCCESS: handshake, encryption and app messaging all work")
+            exit(0)
+        }
+    }
+    link.onPhase = { phase in
+        log("connect", "phase \(phase)")
+        switch phase {
+        case .awaitingConfirmation(let sas):
+            log("connect", "SAS \(sas) — auto-confirming for this diagnostic")
+            link.confirmPairing()
+        case .ready:
+            try? link.send(.hello, json: Hello(deviceID: UUID(), deviceName: "stationctl-connect",
+                                               role: .primary))
+        case .failed(let reason):
+            log("connect", "FAILED: \(reason)"); exit(1)
+        default:
+            break
+        }
+    }
+    link.start()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 10) { log("connect", "TIMED OUT"); exit(1) }
+    dispatchMain()
 
 case "discover":
     let browser = PeerBrowser()
@@ -219,6 +274,9 @@ default:
       stationctl primary --host <ip> --port <port> [--edge right]
           Capture input and forward it when the pointer crosses the given edge.
           Control-Option-Escape always returns control locally.
+
+      stationctl connect --host <ip> --port <port>
+          Handshake against a secondary without capturing input. Safe on one Mac.
 
       stationctl discover
           Browse for Station peers and report what resolved.

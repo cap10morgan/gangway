@@ -82,7 +82,17 @@ public final class StationLink: @unchecked Sendable {
                   expectedPeerIdentity: expectedPeerIdentity)
     }
 
+    private var started = false
+
+    /// Idempotent. A second call would attach another receive loop to the same
+    /// connection, and two loops interleaving reads corrupts the frame stream.
     public func start() {
+        lock.lock()
+        let alreadyStarted = started
+        started = true
+        lock.unlock()
+        guard !alreadyStarted else { return }
+
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -238,7 +248,19 @@ public final class StationLink: @unchecked Sendable {
             lock.unlock()
             guard let cipher else { return fail(HandshakeError.wrongState) }
             do {
+                // Always decrypt, to keep the cipher's sequence counter in step.
                 let inner = try cipher.open(payload)
+
+                // But deliver nothing until the user has confirmed the SAS. The keys
+                // exist as soon as the handshake completes, so without this an
+                // unconfirmed peer could inject input before the user has had any
+                // chance to check the digits, which is exactly what the confirmation
+                // step is there to prevent.
+                lock.lock()
+                let mayDeliver = confirmed
+                lock.unlock()
+                guard mayDeliver else { return }
+
                 var innerDecoder = FrameDecoder()
                 innerDecoder.append(inner)
                 while let frame = try innerDecoder.next() {

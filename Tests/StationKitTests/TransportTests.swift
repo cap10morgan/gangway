@@ -75,6 +75,45 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(decoded.eventData, blob, "gesture payload must survive the hop")
     }
 
+    /// Nothing may be delivered before the user confirms the SAS. Session keys exist as
+    /// soon as the handshake completes, so without an explicit gate a peer could inject
+    /// input before the user has looked at the digits.
+    func testDeliversNothingBeforeConfirmation() throws {
+        let serverIdentity = Identity.generate()
+        nonisolated(unsafe) var serverLink: StationLink?
+        nonisolated(unsafe) var delivered = false
+        let sawConfirmation = expectation(description: "server reached confirmation")
+
+        let listener = StationListener(deviceName: "test-secondary", identity: serverIdentity)
+        listener.onLink = { link in
+            serverLink = link
+            // Deliberately never confirm.
+            link.onPhase = { if case .awaitingConfirmation = $0 { sawConfirmation.fulfill() } }
+            link.onMessage = { _, _ in delivered = true }
+        }
+        try listener.start(advertise: false)
+        defer { listener.stop(); serverLink?.cancel() }
+
+        let port = try waitForPort(listener)
+        let client = StationLink(endpoint: .hostPort(host: "127.0.0.1", port: port),
+                                 identity: .generate())
+        let clientReady = expectation(description: "client ready")
+        client.onPhase = { phase in
+            if case .awaitingConfirmation = phase { client.confirmPairing() }
+            if phase == .ready { clientReady.fulfill() }
+        }
+        client.start()
+        defer { client.cancel() }
+
+        wait(for: [clientReady, sawConfirmation], timeout: 10)
+        client.send(.input, InputEvent(eventType: 29, normalizedX: 0, normalizedY: 0,
+                                       deltaX: 0, deltaY: 0, eventData: Data([1, 2, 3])).encode())
+
+        // Give it every chance to leak through.
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        XCTAssertFalse(delivered, "an unconfirmed peer must not be able to inject input")
+    }
+
     /// A peer presenting an identity other than the pinned one must be refused, which is
     /// what an impersonating machine looks like.
     func testPinnedIdentityMismatchIsRefused() throws {
