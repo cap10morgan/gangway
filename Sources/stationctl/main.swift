@@ -217,6 +217,59 @@ case "forget":
     log("forget", "\(peers.count) pairing(s) cleared; next connection will pair afresh")
     exit(0)
 
+case "edge-test":
+    // Where does the cursor actually land when we inject at each screen edge? Screen
+    // edge behaviours (auto-hidden Dock, menu bar, hot corners) only trigger when the
+    // pointer reaches the true boundary row or column.
+    let bounds = ScreenGeometry.globalBounds
+    log("edge", "global bounds \(bounds)")
+    let injection = EventInjection(bounds: bounds)
+    let probes: [(String, NormalizedPoint)] = [
+        ("centre", NormalizedPoint(x: 0.5, y: 0.5)),
+        ("bottom", NormalizedPoint(x: 0.5, y: 1.0)),
+        ("top",    NormalizedPoint(x: 0.5, y: 0.0)),
+        ("left",   NormalizedPoint(x: 0.0, y: 0.5)),
+        ("right",  NormalizedPoint(x: 1.0, y: 0.5)),
+    ]
+    for (name, point) in probes {
+        let target = point.absolute(in: bounds)
+        injection.enter(at: point)
+        usleep(250_000)
+        let actual = ScreenGeometry.currentCursor
+        let delta = String(format: "%.0f,%.0f", actual.x - target.x, actual.y - target.y)
+        log("edge", "\(name.padding(toLength: 7, withPad: " ", startingAt: 0)) "
+                  + "target=(\(Int(target.x)),\(Int(target.y))) "
+                  + "actual=(\(Int(actual.x)),\(Int(actual.y))) delta=(\(delta))")
+    }
+    exit(0)
+
+case "dock-test":
+    // Do synthetic mouse events reveal an auto-hidden Dock at all? Run this ON the
+    // secondary, with no Station session, and watch. It separates "macOS ignores
+    // injected events for edge behaviours" from "Station's injection is at fault".
+    let display = CGDisplayBounds(CGMainDisplayID())
+    log("dock", "display \(display)")
+    log("dock", "moving to the bottom edge in 2s — watch for the Dock")
+    sleep(2)
+    let x = display.midX
+    for y in stride(from: display.maxY - 250, through: display.maxY, by: 6) {
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        usleep(12_000)
+    }
+    // Hold at the edge, nudging as a hand resting against it would.
+    for _ in 0..<40 {
+        let e = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                        mouseCursorPosition: CGPoint(x: x, y: display.maxY), mouseButton: .left)
+        e?.setIntegerValueField(.mouseEventDeltaY, value: 2)
+        e?.post(tap: .cghidEventTap)
+        usleep(50_000)
+    }
+    log("dock", "held at the bottom edge for 2s; cursor now \(ScreenGeometry.currentCursor)")
+    log("dock", "did the Dock appear?")
+    exit(0)
+
 case "discover":
     let browser = PeerBrowser()
     browser.onPeersChanged = { peers in
@@ -317,6 +370,10 @@ default:
 
       stationctl forget
           Forget all paired Macs so the next connection pairs afresh.
+
+      stationctl dock-test
+          Move the cursor to the bottom edge with synthetic events and watch
+          whether an auto-hidden Dock reveals. Run on the receiving Mac.
 
       stationctl discover
           Browse for Station peers and report what resolved.
