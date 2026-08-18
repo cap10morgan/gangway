@@ -19,13 +19,18 @@ final class AppModel {
     var mode: Mode = .idle
     var permissions = Permissions.current()
     var peers: [DiscoveredPeer] = []
-    var edge: ScreenEdge = .right
+    /// The arrangement of Macs. Edges are derived from it rather than chosen directly,
+    /// so the picker it replaces cannot disagree with the layout.
+    var grid = ScreenLayoutGrid()
+    var localDeviceID: DeviceID = ""
     /// Off unless the user asks for it: sharing a clipboard between machines is a
     /// privacy decision, not a sensible default.
     var clipboardSyncEnabled = false {
         didSet { session?.clipboardSyncEnabled = clipboardSyncEnabled }
     }
     var lastClipboardActivity: String?
+    /// The edge the current session actually uses, for status text.
+    private(set) var lastUsedEdge: ScreenEdge = .right
 
     /// Six digits both Macs display during a first pairing. The user confirms they
     /// match; this is a comparison, never a secret.
@@ -55,6 +60,10 @@ final class AppModel {
             // an empty list with no explanation; the UI shows why one is unusable.
             Task { @MainActor in self?.peers = peers }
         }
+        localDeviceID = SessionController.hex(
+            ((try? PairingStore.loadOrCreateIdentity()) ?? .generate()).publicKeyData)
+        grid = LayoutStore.load()
+        LayoutStore.ensureLocal(localDeviceID, name: deviceName, in: &grid)
         registerWithTCCIfNeeded()
         startPermissionPolling()
         // Browse continuously. Starting on menu open meant discovery had only a moment
@@ -147,13 +156,18 @@ final class AppModel {
             lastError = "Grant Accessibility and Input Monitoring first."
             return
         }
+        // An unplaced peer has no route to it. Default to the right rather than
+        // refusing, then let the arrangement take over once the user places it.
+        let resolvedEdge = edge(toward: peer) ?? .right
         let session = makeSession()
         self.session = session
         mode = .sending
         statusMessage = "Connecting to \(peer.name)…"
         // A previously pinned identity authenticates without any user interaction.
         let pinned = PairingStore.peers().first { $0.name == peer.name }?.publicKey
-        session.startSending(endpoint: peer.endpoint, edge: edge, expectedPeerIdentity: pinned)
+        lastUsedEdge = resolvedEdge
+        session.startSending(endpoint: peer.endpoint, edge: resolvedEdge,
+                             expectedPeerIdentity: pinned)
     }
 
     func stop() {
@@ -168,6 +182,46 @@ final class AppModel {
     }
 
     func stopDiscovery() { browser.stop() }
+
+    // MARK: - Layout
+
+    /// Paired Macs that have no place in the arrangement yet.
+    var unplacedPeers: [ScreenLayoutGrid.Placement] {
+        PairingStore.peers()
+            .filter { grid.placement(of: $0.id) == nil }
+            .map { ScreenLayoutGrid.Placement(id: $0.id,
+                                              position: GridPosition(column: 0, row: 0),
+                                              name: $0.name) }
+    }
+
+    func moveMac(_ id: DeviceID, to position: GridPosition) {
+        let name = grid.placement(of: id)?.name
+            ?? PairingStore.peers().first { $0.id == id }?.name
+            ?? "Mac"
+        grid.place(id, name: name, at: position)
+        LayoutStore.save(grid)
+    }
+
+    func saveLayout() {
+        LayoutStore.save(grid)
+    }
+
+    /// Which edge of this Mac leads to `peer`, from the arrangement. Nil when the two
+    /// are not placed side by side, which is the honest answer: there is no route.
+    func edge(toward peer: DiscoveredPeer) -> ScreenEdge? {
+        guard let id = peerIdentity(for: peer) else { return nil }
+        return grid.edge(from: localDeviceID, to: id)
+    }
+
+    private func peerIdentity(for peer: DiscoveredPeer) -> DeviceID? {
+        // Prefer the advertised identity fingerprint; fall back to matching by name for
+        // a peer that has been paired but is advertising an older record.
+        if let fingerprint = peer.identityFingerprint,
+           let match = PairingStore.peers().first(where: { $0.id.hasPrefix(fingerprint) }) {
+            return match.id
+        }
+        return PairingStore.peers().first { $0.name == peer.name }?.id
+    }
 
     /// Bring the confirmation in front of the user rather than hiding it in a menu.
     private func presentConfirmation(_ sas: String) {
@@ -262,7 +316,7 @@ final class AppModel {
             controlIsRemote = remote
             statusMessage = remote ? "Control is on the other Mac" : "Control is here"
         case .armed:
-            statusMessage = "Ready — move the pointer off the \(edge.rawValue) edge"
+            statusMessage = "Ready — move the pointer off the \(lastUsedEdge.rawValue) edge"
         case .clipboardSynced(let sent, let bytes):
             let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
             lastClipboardActivity = sent ? "Clipboard sent (\(size))" : "Clipboard received (\(size))"

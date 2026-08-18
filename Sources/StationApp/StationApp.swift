@@ -15,6 +15,13 @@ struct StationApp: App {
             Image(systemName: model.menuBarSymbol)
         }
         .menuBarExtraStyle(.window)
+
+        // A window, not a popover: arranging screens needs room, and a popover
+        // dismisses whenever focus moves, which dragging does constantly.
+        Window("Screen Arrangement", id: "layout") {
+            LayoutEditorView(model: model)
+        }
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -151,6 +158,7 @@ struct PermissionRow: View {
 
 struct IdleSection: View {
     @Bindable var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -169,11 +177,10 @@ struct IdleSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Picker("This Mac is on the", selection: $model.edge) {
-                    // Where the *peer* sits relative to this Mac.
-                    ForEach(ScreenEdge.allCases, id: \.self) { edge in
-                        Text(edge.rawValue.capitalized).tag(edge)
-                    }
+                Button {
+                    openWindow(id: "layout")
+                } label: {
+                    Label("Arrange screens…", systemImage: "rectangle.3.group")
                 }
                 .font(.caption)
 
@@ -302,7 +309,7 @@ struct SendingSection: View {
             if model.confirmationCode == nil {
                 Text(model.controlIsRemote
                      ? "Input is going to the other Mac."
-                     : "Move the pointer off the \(model.edge.rawValue) edge to take over.")
+                     : "Move the pointer off the \(model.lastUsedEdge.rawValue) edge to take over.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
