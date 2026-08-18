@@ -242,3 +242,43 @@ final class NormalizedPointTests: XCTestCase {
         XCTAssertNil(layout.edge(of: UUID()))
     }
 }
+
+final class PixelPositionTests: XCTestCase {
+
+    private let screen = Rect(x: 0, y: 0, width: 2056, height: 1329)
+
+    /// 1.0 must land on the last addressable row, not one past it. An event located at
+    /// maxY is off-screen for hit-testing, which silently disables edge behaviours.
+    func testFarEdgeMapsToLastPixelNotPastIt() {
+        let bottom = NormalizedPoint(x: 0.5, y: 1.0).pixelPosition(in: screen)
+        XCTAssertEqual(bottom.y, 1328)
+        let right = NormalizedPoint(x: 1.0, y: 0.5).pixelPosition(in: screen)
+        XCTAssertEqual(right.x, 2055)
+    }
+
+    func testNearEdgeMapsToZero() {
+        let topLeft = NormalizedPoint(x: 0, y: 0).pixelPosition(in: screen)
+        XCTAssertEqual(topLeft.x, 0)
+        XCTAssertEqual(topLeft.y, 0)
+    }
+
+    func testRespectsNonZeroOrigin() {
+        let shifted = Rect(x: -2560, y: -300, width: 2560, height: 1440)
+        let bottomRight = NormalizedPoint(x: 1, y: 1).pixelPosition(in: shifted)
+        XCTAssertEqual(bottomRight.x, -2560 + 2559)
+        XCTAssertEqual(bottomRight.y, -300 + 1439)
+    }
+
+    func testMidpointIsUnsurprising() {
+        let middle = NormalizedPoint(x: 0.5, y: 0.5).pixelPosition(in: screen)
+        XCTAssertEqual(middle.x, (2055.0 * 0.5).rounded())
+        XCTAssertEqual(middle.y, (1328.0 * 0.5).rounded())
+    }
+
+    func testZeroSizedScreenDoesNotProduceNegativeCoordinates() {
+        let empty = Rect(x: 0, y: 0, width: 0, height: 0)
+        let point = NormalizedPoint(x: 1, y: 1).pixelPosition(in: empty)
+        XCTAssertEqual(point.x, 0)
+        XCTAssertEqual(point.y, 0)
+    }
+}

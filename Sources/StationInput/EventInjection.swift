@@ -41,7 +41,7 @@ public final class EventInjection: @unchecked Sendable {
 
     /// Place the cursor when control arrives from the primary.
     public func enter(at point: NormalizedPoint) {
-        let target = point.clamped().absolute(in: bounds)
+        let target = point.clamped().pixelPosition(in: bounds)
         CGWarpMouseCursorPosition(target)
         // Warping leaves the mouse decoupled on some paths; re-associate so local
         // input still works if the peer disconnects mid-session.
@@ -59,9 +59,12 @@ public final class EventInjection: @unchecked Sendable {
         guard let cgEvent = CGEvent(withDataAllocator: nil, data: event.eventData as CFData) else {
             return false
         }
+        // Pixel mapping, not the continuous one: an event located one past the last row
+        // is off-screen for hit-testing, which silently disables edge behaviours such as
+        // revealing an auto-hidden Dock.
         let target = NormalizedPoint(x: event.normalizedX, y: event.normalizedY)
             .clamped()
-            .absolute(in: bounds)
+            .pixelPosition(in: bounds)
 
         if Self.pointerMovingTypes.contains(event.eventType) {
             // Posting the event moves the cursor, so setting location is enough.

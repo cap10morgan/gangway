@@ -40,9 +40,26 @@ public struct NormalizedPoint: Sendable, Equatable {
         NormalizedPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
     }
 
+    /// Continuous mapping, where 1.0 lands on the far boundary. Correct for geometry,
+    /// but one past the last addressable pixel.
     public func absolute(in bounds: Rect) -> CGPoint {
         CGPoint(x: bounds.minX + x * bounds.width,
                 y: bounds.minY + y * bounds.height)
+    }
+
+    /// Mapping to an addressable pixel, where 1.0 lands on the *last* row or column.
+    ///
+    /// Use this for anything that positions the pointer. `absolute(in:)` maps 1.0 to
+    /// `maxY`, which is one past the bottom row: macOS clamps the cursor itself, so the
+    /// pointer still looks right, but the event's location stays off-screen and
+    /// edge-triggered behaviour hit-tests that location. The visible symptom was an
+    /// auto-hidden Dock that never revealed no matter how hard the pointer was pushed
+    /// into the bottom of the screen, while manual movement worked fine.
+    public func pixelPosition(in bounds: Rect) -> CGPoint {
+        let maxColumn = max(bounds.width - 1, 0)
+        let maxRow = max(bounds.height - 1, 0)
+        return CGPoint(x: (bounds.minX + x * maxColumn).rounded(),
+                       y: (bounds.minY + y * maxRow).rounded())
     }
 
     public static func of(_ point: CGPoint, in bounds: Rect) -> NormalizedPoint {

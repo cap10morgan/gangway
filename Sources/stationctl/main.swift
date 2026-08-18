@@ -233,7 +233,7 @@ case "edge-test":
         ("right",  NormalizedPoint(x: 1.0, y: 0.5)),
     ]
     for (name, point) in probes {
-        let target = point.absolute(in: bounds)
+        let target = point.pixelPosition(in: bounds)   // what injection actually uses
         injection.enter(at: point)
         usleep(250_000)
         let actual = ScreenGeometry.currentCursor
