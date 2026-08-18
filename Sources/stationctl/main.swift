@@ -61,150 +61,74 @@ switch command {
 // MARK: - secondary: receive and inject
 
 case "secondary":
-    let pairing = PairingString(code: flag("code") ?? Pairing.generateCode(),
-                                salt: Pairing.generateSalt())
-    let injection = EventInjection()
-    let screens = ScreenGeometry.localScreens()
+    let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
+    session.installTerminationHandlers()
+    nonisolated(unsafe) var advertised = false
 
-    log("secondary", "displays: \(screens.screens.count), bounds \(screens.bounds)")
-    print("")
-    print("  Run this on the primary Mac:")
-    print("    stationctl primary --host <this-mac-ip> --port <port> --pair \(pairing.encoded) --edge right")
-    print("")
-
-    nonisolated(unsafe) var link: StationLink?
-    let listener = StationListener(deviceName: Host.current().localizedName ?? "Mac")
-    listener.onError = { log("secondary", "listener error: \($0)") }
-    listener.onReady = { port in
-        log("secondary", "listening on port \(port) — waiting for primary")
-        print("")
-        print("    stationctl primary --host <this-mac-ip> --port \(port) --pair \(pairing.encoded) --edge right")
-        print("")
-    }
-    listener.onLink = { newLink in
-        log("secondary", "primary connected from \(newLink.endpointDescription)")
-        link = newLink
-        newLink.onStateChange = { log("secondary", "link \($0)") }
-        newLink.onError = { log("secondary", "link error: \($0)") }
-        newLink.onMessage = { type, payload in
-            switch type {
-            case .hello:
-                if let hello = try? JSONDecoder().decode(Hello.self, from: payload) {
-                    log("secondary", "hello from \(hello.deviceName) (protocol \(hello.protocolVersion))")
-                }
-                // Tell the primary our geometry so it can scale pointer motion.
-                try? newLink.send(.screens, json: screens)
-
-            case .enterScreen:
-                guard let msg = EnterScreen.decode(payload) else { return }
-                let at = NormalizedPoint(x: msg.normalizedX, y: msg.normalizedY)
-                injection.enter(at: at)
-                log("secondary", "control ARRIVED at \(String(format: "%.3f,%.3f", at.x, at.y))")
-
-            case .leaveScreen:
-                injection.leave()
-                log("secondary", "control LEFT")
-
-            case .input:
-                guard let event = InputEvent.decode(payload) else { return }
-                if !injection.inject(event) {
-                    log("secondary", "failed to rehydrate event type \(event.eventType)")
-                }
-
-            default:
-                break
+    session.onEvent = { event in
+        switch event {
+        case .listening(let code, let salt, let port):
+            let pair = PairingString(code: code, salt: salt).encoded
+            log("secondary", "listening on port \(port)")
+            if !advertised {
+                advertised = true
+                print("")
+                print("  Run this on the primary Mac:")
+                print("    stationctl primary --host <this-mac-ip> --port \(port) --pair \(pair) --edge right")
+                print("")
             }
+        case .connected(let peerName):
+            log("secondary", "primary connected: \(peerName)")
+        case .disconnected(let reason):
+            log("secondary", "disconnected\(reason.map { ": \($0)" } ?? "")")
+        case .controlMoved(let remote):
+            log("secondary", remote ? "control ARRIVED" : "control LEFT")
+        case .armed:
+            break
+        case .failed(let message):
+            log("secondary", "failed: \(message)")
         }
     }
-    do {
-        try listener.start(credential: .code(pairing.code), salt: pairing.salt)
-    } catch {
-        log("secondary", "failed to start: \(error)"); exit(1)
-    }
+    log("secondary", "displays: \(ScreenGeometry.localScreens().screens.count), "
+                   + "bounds \(ScreenGeometry.globalBounds)")
+    session.startReceiving(code: flag("code"))
     CFRunLoopRun()
 
 // MARK: - primary: capture and forward
 
 case "primary":
-    guard let host = flag("host"), let portString = flag("port"),
-          let port = NWEndpoint.Port(portString),
+    guard let host = flag("host"), let portString = flag("port"), let port = UInt16(portString),
           let pairString = flag("pair"), let pairing = PairingString(encoded: pairString) else {
         print("usage: stationctl primary --host <ip> --port <port> --pair <code.salt> [--edge right]")
         exit(2)
     }
     let edge = ScreenEdge(rawValue: flag("edge") ?? "right") ?? .right
-    let peerID = UUID()
+    let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
+    session.installTerminationHandlers()
 
-    let capture = EventCapture(layout: Layout(placements: [edge: peerID]))
+    session.onEvent = { event in
+        switch event {
+        case .armed:
+            log("primary", "capture ARMED")
+            print("")
+            print("  Move the pointer off the \(edge.rawValue) edge to take over the peer.")
+            print("  Control-Option-Escape forces control back at any time.")
+            print("")
+        case .connected(let peerName):
+            log("primary", "connected to \(peerName)")
+        case .controlMoved(let remote):
+            log("primary", remote ? "control -> PEER" : "control -> LOCAL")
+        case .disconnected(let reason):
+            log("primary", "disconnected\(reason.map { ": \($0)" } ?? "")")
+        case .failed(let message):
+            log("primary", "failed: \(message)")
+            exit(1)
+        case .listening:
+            break
+        }
+    }
     log("primary", "local bounds \(ScreenGeometry.globalBounds), peer on \(edge.rawValue) edge")
-
-    let link = StationLink(endpoint: .hostPort(host: NWEndpoint.Host(host), port: port),
-                           credential: .code(pairing.code), salt: pairing.salt)
-
-    capture.onEvent = { event in link.send(.input, event.encode()) }
-    capture.onEnterPeer = { _, at in
-        link.send(.enterScreen, EnterScreen(normalizedX: at.x, normalizedY: at.y).encode())
-        log("primary", "control -> PEER at \(String(format: "%.3f,%.3f", at.x, at.y))")
-    }
-    capture.onReturnLocal = { edge, _ in
-        link.send(.leaveScreen, Data())
-        log("primary", "control -> LOCAL (exited \(edge.rawValue))")
-    }
-    capture.onEscapeHatch = { log("primary", "ESCAPE HATCH — control forced back locally") }
-    capture.onTapDisabled = { log("primary", "tap was disabled by the system; re-armed") }
-
-    link.onError = { log("primary", "error: \($0)") }
-    link.onStateChange = { state in
-        log("primary", "link \(state)")
-        if state == .ready {
-            let hello = Hello(deviceID: UUID(),
-                              deviceName: Host.current().localizedName ?? "Mac",
-                              role: .primary)
-            try? link.send(.hello, json: hello)
-        }
-        if case .failed(let reason) = state {
-            log("primary", "giving up: \(reason)")
-            // capture.stop() must run on the run-loop thread that owns the tap.
-            DispatchQueue.main.async { capture.stop(); exit(1) }
-        }
-    }
-    link.onMessage = { type, payload in
-        guard type == .screens,
-              let peerScreens = try? JSONDecoder().decode(ScreenSet.self, from: payload) else { return }
-        // The tap must be created on the thread that runs the run loop.
-        DispatchQueue.main.async {
-            capture.setPeerBounds(peerScreens.bounds, for: peerID)
-            do {
-                try capture.start()
-                log("primary", "peer bounds \(peerScreens.bounds) — capture ARMED")
-                print("")
-                print("  Move the pointer off the \(edge.rawValue) edge to take over the peer.")
-                print("  Control-Option-Escape forces control back at any time.")
-                print("")
-            } catch {
-                log("primary", "\(error.localizedDescription)")
-                exit(1)
-            }
-        }
-    }
-    // Safety: while forwarding, the cursor is hidden and decoupled from the physical
-    // mouse. If we exit without releasing it the user is left with what looks like a
-    // broken pointer, so make sure Ctrl-C and SIGTERM always tear the capture down.
-    nonisolated(unsafe) var signalSources: [DispatchSourceSignal] = []
-    for sig in [SIGINT, SIGTERM] {
-        signal(sig, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-        source.setEventHandler {
-            log("primary", "shutting down — releasing cursor")
-            capture.stop()
-            link.cancel()
-            exit(0)
-        }
-        source.resume()
-        signalSources.append(source)
-    }
-
-    link.start()
+    session.startSending(host: host, port: port, code: pairing.code, salt: pairing.salt, edge: edge)
     CFRunLoopRun()
 
 case "probe":

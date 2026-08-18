@@ -93,6 +93,17 @@ public enum CursorControl {
 
     nonisolated(unsafe) private static var safetyNetInstalled = false
     nonisolated(unsafe) private static var signalSources: [DispatchSourceSignal] = []
+    nonisolated(unsafe) private static var terminationCleanup: [@Sendable () -> Void] = []
+
+    /// Register teardown to run before the process exits on a caught signal. Used to
+    /// release the event tap and re-associate the mouse, which must happen alongside
+    /// unhiding the cursor rather than being skipped by an early exit.
+    public static func addTerminationCleanup(_ block: @escaping @Sendable () -> Void) {
+        lock.lock()
+        terminationCleanup.append(block)
+        lock.unlock()
+        installSafetyNet()
+    }
 
     /// Idempotent. Safe to call from any consumer that might hide the cursor.
     public static func installSafetyNet() {
@@ -117,6 +128,10 @@ public enum CursorControl {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler {
+                lock.lock()
+                let cleanup = terminationCleanup
+                lock.unlock()
+                for block in cleanup { block() }
                 CursorControl.show()
                 exit(128 + sig)
             }

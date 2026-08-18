@@ -37,6 +37,13 @@ public final class SessionController: @unchecked Sendable {
         self.deviceID = deviceID
     }
 
+    /// Ensure the tap is released and the cursor restored if the process is signalled.
+    /// Without this, quitting while control is on a peer leaves the local mouse
+    /// decoupled and the pointer hidden.
+    public func installTerminationHandlers() {
+        CursorControl.addTerminationCleanup { [weak self] in self?.stop() }
+    }
+
     // MARK: - Secondary
 
     /// Listen for a primary and inject whatever it sends.

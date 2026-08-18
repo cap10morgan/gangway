@@ -106,6 +106,8 @@ final class AppModel {
 
     private func makeSession() -> SessionController {
         let session = SessionController(deviceName: deviceName, deviceID: deviceID)
+        // Quitting while control is on a peer must not leave the mouse decoupled.
+        session.installTerminationHandlers()
         session.onEvent = { [weak self] event in
             Task { @MainActor in self?.apply(event) }
         }
