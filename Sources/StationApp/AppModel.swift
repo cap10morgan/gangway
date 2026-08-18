@@ -40,10 +40,15 @@ final class AppModel {
 
     init() {
         browser.onPeersChanged = { [weak self] peers in
-            Task { @MainActor in self?.peers = peers.filter { $0.isCompatible } }
+            // Deliberately unfiltered. Silently dropping peers that fail a check meant
+            // an empty list with no explanation; the UI shows why one is unusable.
+            Task { @MainActor in self?.peers = peers }
         }
         registerWithTCCIfNeeded()
         startPermissionPolling()
+        // Browse continuously. Starting on menu open meant discovery had only a moment
+        // to find and resolve peers before the user gave up looking at an empty list.
+        browser.start()
     }
 
     /// Ask for both permissions at launch when they are missing.
@@ -156,8 +161,18 @@ final class AppModel {
         statusMessage = "Not running"
     }
 
-    func startDiscovery() { browser.start() }
     func stopDiscovery() { browser.stop() }
+
+    /// Why a discovered peer cannot be used, or nil if it is usable.
+    func unusableReason(for peer: DiscoveredPeer) -> String? {
+        if !peer.isCompatible {
+            return peer.protocolVersion == nil
+                ? "Could not read pairing details"
+                : "Different Station version"
+        }
+        if !peer.isPairable { return "Not ready to pair" }
+        return nil
+    }
 
     private func makeSession() -> SessionController {
         let session = SessionController(deviceName: deviceName, deviceID: deviceID)

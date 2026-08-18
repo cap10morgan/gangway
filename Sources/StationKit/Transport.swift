@@ -251,60 +251,119 @@ public final class StationListener: @unchecked Sendable {
 }
 
 /// Finds Station peers on the local network.
-public final class PeerBrowser: @unchecked Sendable {
-    private var browser: NWBrowser?
-    private let queue: DispatchQueue
+///
+/// Uses `NetServiceBrowser` with an explicit resolve rather than `NWBrowser`.
+/// Measured directly: `NWBrowser` browse results carry no TXT record at all
+/// (`metadata` is `.none`), while `NetService` resolution returns it reliably. Station
+/// needs the TXT record, because that is where the peer advertises the pairing salt and
+/// its protocol version, so browsing alone is not enough.
+public final class PeerBrowser: NSObject, @unchecked Sendable {
+
+    private let browser = NetServiceBrowser()
+    /// Services must be retained while resolving or the resolve is abandoned.
+    private var resolving: [NetService] = []
+    private var found: [String: DiscoveredPeer] = [:]
+    private let lock = NSLock()
 
     public var onPeersChanged: (@Sendable ([DiscoveredPeer]) -> Void)?
 
-    public init(queue: DispatchQueue = .global(qos: .utility)) {
-        self.queue = queue
+    public override init() {
+        super.init()
+        browser.delegate = self
     }
 
+    /// Must be called from a thread with a live run loop; the app's main thread is fine.
     public func start() {
-        let params = NWParameters()
-        params.includePeerToPeer = true
-        let browser = NWBrowser(for: .bonjour(type: stationBonjourType, domain: nil), using: params)
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            let peers = results.compactMap { DiscoveredPeer(result: $0) }
-            self?.onPeersChanged?(peers)
-        }
-        browser.start(queue: queue)
-        self.browser = browser
+        browser.searchForServices(ofType: stationBonjourType, inDomain: "local.")
     }
 
     public func stop() {
-        browser?.cancel()
-        browser = nil
+        browser.stop()
+        lock.lock()
+        resolving.removeAll()
+        found.removeAll()
+        lock.unlock()
+        publish()
+    }
+
+    private func publish() {
+        lock.lock()
+        let peers = Array(found.values).sorted { $0.name < $1.name }
+        lock.unlock()
+        onPeersChanged?(peers)
+    }
+}
+
+extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
+
+    public func netServiceBrowser(_ browser: NetServiceBrowser,
+                                  didFind service: NetService, moreComing: Bool) {
+        lock.lock()
+        resolving.append(service)
+        lock.unlock()
+        service.delegate = self
+        service.resolve(withTimeout: 5)
+    }
+
+    public func netServiceBrowser(_ browser: NetServiceBrowser,
+                                  didRemove service: NetService, moreComing: Bool) {
+        lock.lock()
+        found.removeValue(forKey: service.name)
+        resolving.removeAll { $0 === service }
+        lock.unlock()
+        if !moreComing { publish() }
+    }
+
+    public func netServiceDidResolveAddress(_ service: NetService) {
+        guard let host = service.hostName, service.port > 0 else { return }
+        let txt = service.txtRecordData().map { NetService.dictionary(fromTXTRecord: $0) } ?? [:]
+        func string(_ key: String) -> String? {
+            txt[key].flatMap { String(data: $0, encoding: .utf8) }
+        }
+        let peer = DiscoveredPeer(name: service.name,
+                                  host: host,
+                                  port: UInt16(service.port),
+                                  salt: string("salt").flatMap(DiscoveredPeer.hexToData),
+                                  protocolVersion: string("v").flatMap(Int.init))
+        lock.lock()
+        found[service.name] = peer
+        resolving.removeAll { $0 === service }
+        lock.unlock()
+        publish()
+    }
+
+    public func netService(_ service: NetService, didNotResolve errorDict: [String: NSNumber]) {
+        lock.lock()
+        resolving.removeAll { $0 === service }
+        lock.unlock()
     }
 }
 
 public struct DiscoveredPeer: Sendable, Equatable, Identifiable {
     public let name: String
-    public let endpoint: NWEndpoint
-    /// Pairing salt advertised by the peer, if it published one.
+    public let host: String
+    public let port: UInt16
+    /// Pairing salt advertised by the peer.
     public let salt: Data?
     public let protocolVersion: Int?
     public var id: String { name }
 
-    /// True when this peer speaks a protocol version we understand.
-    public var isCompatible: Bool {
-        guard let protocolVersion else { return false }
-        return protocolVersion == stationProtocolVersion
+    public var endpoint: NWEndpoint {
+        .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? .any)
     }
 
-    init?(result: NWBrowser.Result) {
-        guard case .service(let name, _, _, _) = result.endpoint else { return nil }
-        self.name = name
-        self.endpoint = result.endpoint
+    /// True when this peer speaks a protocol version we understand.
+    public var isCompatible: Bool { protocolVersion == stationProtocolVersion }
 
-        if case .bonjour(let txt) = result.metadata {
-            self.salt = txt["salt"].flatMap(Self.hexToData)
-            self.protocolVersion = txt["v"].flatMap(Int.init)
-        } else {
-            self.salt = nil
-            self.protocolVersion = nil
-        }
+    /// True when we have everything needed to attempt pairing.
+    public var isPairable: Bool { salt != nil && port > 0 }
+
+    public init(name: String, host: String, port: UInt16, salt: Data?, protocolVersion: Int?) {
+        self.name = name
+        self.host = host
+        self.port = port
+        self.salt = salt
+        self.protocolVersion = protocolVersion
     }
 
     static func hexToData(_ hex: String) -> Data? {

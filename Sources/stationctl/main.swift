@@ -131,6 +131,27 @@ case "primary":
     session.startSending(host: host, port: port, code: pairing.code, salt: pairing.salt, edge: edge)
     CFRunLoopRun()
 
+case "discover":
+    // Browse for peers and report exactly what was resolved, including whether the
+    // pairing salt came through. Empty output means discovery, not pairing, is at fault.
+    let browser = PeerBrowser()
+    browser.onPeersChanged = { peers in
+        if peers.isEmpty {
+            log("discover", "no peers")
+            return
+        }
+        for p in peers {
+            log("discover", "\(p.name) at \(p.host):\(p.port) "
+                          + "salt=\(p.salt.map { "\($0.count)B" } ?? "MISSING") "
+                          + "v=\(p.protocolVersion.map(String.init) ?? "MISSING") "
+                          + "compatible=\(p.isCompatible) pairable=\(p.isPairable)")
+        }
+    }
+    browser.start()
+    log("discover", "browsing \(stationBonjourType) for 12s")
+    DispatchQueue.main.asyncAfter(deadline: .now() + 12) { exit(0) }
+    CFRunLoopRun()
+
 case "probe":
     // Loopback transport check: pairing, framing, and an opaque gesture blob.
     let salt = Pairing.generateSalt()
@@ -202,6 +223,9 @@ default:
       stationctl primary --host <ip> --port <port> --pair <code.salt> [--edge right]
           Capture input and forward it when the pointer crosses the given edge.
           Control-Option-Escape always returns control locally.
+
+      stationctl discover
+          Browse for Station peers and report what resolved.
 
       stationctl probe
           Loopback transport self-test.

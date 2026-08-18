@@ -48,11 +48,7 @@ struct MenuContent: View {
             Divider()
             footer
         }
-        .onAppear {
-            model.refreshPermissions()
-            model.startDiscovery()
-        }
-        .onDisappear { model.stopDiscovery() }
+        .onAppear { model.refreshPermissions() }
     }
 
     private var header: some View {
@@ -181,12 +177,18 @@ struct IdleSection: View {
                     .font(.system(.body, design: .monospaced))
 
                 ForEach(model.peers) { peer in
-                    Button {
-                        model.startSending(to: peer)
-                    } label: {
-                        Label(peer.name, systemImage: "display")
+                    if let reason = model.unusableReason(for: peer) {
+                        Label("\(peer.name) — \(reason)", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button {
+                            model.startSending(to: peer)
+                        } label: {
+                            Label(peer.name, systemImage: "display")
+                        }
+                        .disabled(model.enteredCode.count != Pairing.codeDigits)
                     }
-                    .disabled(model.enteredCode.count != Pairing.codeDigits)
                 }
             }
         }
