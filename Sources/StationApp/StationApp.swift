@@ -58,6 +58,9 @@ struct MenuContent: View {
             }
 
             Divider()
+            LoginItemSection(model: model)
+
+            Divider()
             footer
         }
         .onAppear { model.refreshPermissions() }
@@ -232,6 +235,49 @@ struct ReceivingSection: View {
             }
         }
         .padding(12)
+    }
+}
+
+struct LoginItemSection: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch model.loginItemState {
+            case .enabled, .disabled:
+                Toggle("Start at login", isOn: Binding(
+                    get: { model.startsAtLogin },
+                    set: { model.setStartAtLogin($0) }))
+                    .font(.callout)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+
+            case .requiresApproval:
+                // macOS will not let the app override the user's choice here, so
+                // pretending the toggle works would just silently do nothing.
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Start at login is turned off in System Settings",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Open Login Items") { model.openLoginItemsSettings() }
+                        .controlSize(.small)
+                }
+
+            case .unavailable(let reason):
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Start at login unavailable")
+                        .font(.callout)
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
 

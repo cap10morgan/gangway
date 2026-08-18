@@ -23,6 +23,8 @@ cd "$(dirname "$0")"
 
 CONFIG=${CONFIG:-release}
 APP="build/Station.app"
+INSTALL=false
+[ "${1:-}" = "--install" ] && INSTALL=true
 
 echo "==> Building ($CONFIG)"
 swift build -c "$CONFIG" --product StationApp
@@ -73,6 +75,17 @@ codesign --verify --verbose=2 "$APP" 2>&1 | sed 's/^/    /'
 
 echo
 echo "Built $APP"
+if [ "$INSTALL" = true ]; then
+    echo "==> Installing to /Applications"
+    # Start at login registers the bundle at its current path, so an app left in a
+    # build directory produces a login item that breaks on the next clean.
+    pkill -x StationApp 2>/dev/null || true
+    rm -rf /Applications/Station.app
+    cp -R "$APP" /Applications/Station.app
+    APP="/Applications/Station.app"
+    echo "    installed at $APP"
+fi
+
 echo
 echo "IMPORTANT: launch it with  open $APP"
 echo "Running the binary directly from a terminal makes it inherit the terminal's"

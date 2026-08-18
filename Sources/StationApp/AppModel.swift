@@ -29,6 +29,7 @@ final class AppModel {
         didSet { session?.clipboardSyncEnabled = clipboardSyncEnabled }
     }
     var lastClipboardActivity: String?
+    var loginItemState: LoginItem.State = .disabled
     /// The edge the current session actually uses, for status text.
     private(set) var lastUsedEdge: ScreenEdge = .right
 
@@ -62,6 +63,7 @@ final class AppModel {
         }
         localDeviceID = SessionController.hex(
             ((try? PairingStore.loadOrCreateIdentity()) ?? .generate()).publicKeyData)
+        loginItemState = LoginItem.state
         grid = LayoutStore.load()
         LayoutStore.ensureLocal(localDeviceID, name: deviceName, in: &grid)
         registerWithTCCIfNeeded()
@@ -118,6 +120,9 @@ final class AppModel {
                 guard let self else { return }
                 let latest = Permissions.current()
                 if latest != self.permissions { self.permissions = latest }
+                // Login item state changes in System Settings, with no notification.
+                let login = LoginItem.state
+                if login != self.loginItemState { self.loginItemState = login }
             }
         }
     }
@@ -135,6 +140,25 @@ final class AppModel {
 
     func refreshPermissions() {
         permissions = Permissions.current()
+    }
+
+    // MARK: - Start at login
+
+    var startsAtLogin: Bool { loginItemState == .enabled }
+
+    func setStartAtLogin(_ enabled: Bool) {
+        do {
+            try LoginItem.setEnabled(enabled)
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+        // Read back rather than assuming: macOS may leave it requiring approval.
+        loginItemState = LoginItem.state
+    }
+
+    func openLoginItemsSettings() {
+        LoginItem.openLoginItemsSettings()
     }
 
     // MARK: - Lifecycle
