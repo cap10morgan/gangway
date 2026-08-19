@@ -303,10 +303,12 @@ struct ClipboardSection: View {
                 if let activity = model.lastClipboardActivity, model.clipboardSyncEnabled {
                     Text(activity)
                 } else if model.clipboardSyncEnabled {
-                    // Say what is excluded, so nobody assumes passwords are synced.
                     Text("Items marked private by password managers are never shared.")
                 } else {
-                    Text("Your clipboard stays on this Mac.")
+                    // Phrased for the moment before the decision. What someone weighing
+                    // this up wants to know is whether turning it on will leak a
+                    // password, and saying so only afterwards is too late to reassure.
+                    Text("When on, items marked private by password managers are never shared.")
                 }
             }
             .font(.caption2)
