@@ -47,6 +47,9 @@ final class AppModel {
     private static let clipboardKey = "com.station.clipboardSync"
     var lastClipboardActivity: String?
     var loginItemState: LoginItem.State = .disabled
+    /// Universal Control claims screen edges before Station can, so warn rather than
+    /// letting the pointer vanish to an iPad with no explanation.
+    var universalControlConflict = false
     /// The edge the current session actually uses, for status text.
     private(set) var lastUsedEdge: ScreenEdge = .right
 
@@ -95,6 +98,7 @@ final class AppModel {
         localDeviceID = SessionController.hex(
             ((try? PairingStore.loadOrCreateIdentity()) ?? .generate()).publicKeyData)
         loginItemState = LoginItem.state
+        universalControlConflict = SystemConflicts.universalControlEdgesEnabled
         grid = LayoutStore.load()
         LayoutStore.ensureLocal(localDeviceID, name: deviceName, in: &grid)
         registerWithTCCIfNeeded()
@@ -162,6 +166,10 @@ final class AppModel {
                 // Login item state changes in System Settings, with no notification.
                 let login = LoginItem.state
                 if login != self.loginItemState { self.loginItemState = login }
+                let conflict = SystemConflicts.universalControlEdgesEnabled
+                if conflict != self.universalControlConflict {
+                    self.universalControlConflict = conflict
+                }
             }
         }
     }
@@ -194,10 +202,15 @@ final class AppModel {
         }
         // Read back rather than assuming: macOS may leave it requiring approval.
         loginItemState = LoginItem.state
+        universalControlConflict = SystemConflicts.universalControlEdgesEnabled
     }
 
     func openLoginItemsSettings() {
         LoginItem.openLoginItemsSettings()
+    }
+
+    func openDisplaysSettings() {
+        SystemConflicts.openDisplaysSettings()
     }
 
     // MARK: - Lifecycle

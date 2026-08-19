@@ -52,6 +52,11 @@ struct MenuContent: View {
                 ClipboardSection(model: model)
             }
 
+            if model.universalControlConflict && model.isRunning {
+                Divider()
+                UniversalControlWarning(model: model)
+            }
+
             if let error = model.lastError {
                 Divider()
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -281,6 +286,29 @@ struct LoginItemSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+}
+
+/// Universal Control takes the pointer at a screen edge before Station sees it, so
+/// without this the pointer simply disappears to an iPad and Station looks broken.
+struct UniversalControlWarning: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Universal Control is using screen edges", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Text("Your pointer will go to a nearby iPad or Mac instead of a Station Mac. "
+                 + "Turn off \"Push through the edge of a display\" in Displays settings.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open Displays Settings") { model.openDisplaysSettings() }
+                .controlSize(.small)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
