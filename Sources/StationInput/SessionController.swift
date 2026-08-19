@@ -130,7 +130,9 @@ public final class SessionController: @unchecked Sendable {
         // Every discovered Mac, not only paired ones: the pointer can be pushed at a
         // Mac that has never been paired, and that is what starts the pairing.
         for peer in peers {
-            guard let id = peer.deviceID else { continue }
+            // Never treat our own advertisement as a peer: it would put this Mac in its
+            // own arrangement twice and let it try to connect to itself.
+            guard let id = peer.deviceID, id != localDeviceID else { continue }
             endpoints[id] = peer.endpoint
             names[id] = peer.name
         }

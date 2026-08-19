@@ -75,8 +75,9 @@ case "run":
 
     let browser = PeerBrowser()
     browser.onPeersChanged = { peers in
-        session.updateDiscovered(peers)
-        for p in peers {
+        let others = peers.filter { $0.deviceID != session.localDeviceID }
+        session.updateDiscovered(others)
+        for p in others {
             log("discover", "\(p.name) at \(p.host):\(p.port) id=\(p.shortFingerprint)")
         }
     }

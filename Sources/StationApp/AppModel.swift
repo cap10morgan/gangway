@@ -72,8 +72,13 @@ final class AppModel {
             // Deliberately unfiltered. Silently dropping peers that fail a check meant
             // an empty list with no explanation; the UI shows why one is unusable.
             Task { @MainActor in
-                self?.peers = peers
-                self?.session?.updateDiscovered(peers)
+                guard let self else { return }
+                // Bonjour reports the service this Mac publishes, so drop ourselves.
+                // Matching on identity rather than name, because two Macs can share a
+                // name and Bonjour renames rather than deduplicating.
+                let others = peers.filter { $0.deviceID != self.localDeviceID }
+                self.peers = others
+                self.session?.updateDiscovered(others)
             }
         }
         localDeviceID = SessionController.hex(
