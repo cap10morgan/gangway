@@ -10,7 +10,14 @@ struct StationApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
+                // The minimum height is a workaround, not a design choice. On macOS 27
+                // beta a short MenuBarExtra panel is built without its
+                // NSVisualEffectView, so nothing paints the rounded translucent
+                // background and it renders as a bare square sitting low in its own
+                // window. Past a certain content height the effect view appears and it
+                // looks correct. Remove this once the platform bug is fixed.
                 .frame(width: 320)
+                .frame(minHeight: 340)
         } label: {
             Image(systemName: model.menuBarSymbol)
         }
@@ -289,17 +296,22 @@ struct ClipboardSection: View {
                 .font(.callout)
                 .toggleStyle(.switch)
                 .controlSize(.small)
-            if let activity = model.lastClipboardActivity, model.clipboardSyncEnabled {
-                Text(activity)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else if model.clipboardSyncEnabled {
-                // Say what is excluded, so nobody assumes passwords are being synced.
-                Text("Items marked private by password managers are never shared.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            // A line in both states, not only when sharing is on. It says something
+            // true either way, and it keeps the panel's height stable, which matters
+            // more than it should: see the note on panel height below.
+            Group {
+                if let activity = model.lastClipboardActivity, model.clipboardSyncEnabled {
+                    Text(activity)
+                } else if model.clipboardSyncEnabled {
+                    // Say what is excluded, so nobody assumes passwords are synced.
+                    Text("Items marked private by password managers are never shared.")
+                } else {
+                    Text("Your clipboard stays on this Mac.")
+                }
             }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
