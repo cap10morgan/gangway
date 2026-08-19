@@ -10,13 +10,9 @@ import StationInput
 @Observable
 final class AppModel {
 
-    enum Mode: Equatable {
-        case idle
-        case receiving          // this Mac is controlled by another
-        case sending            // this Mac controls another
-    }
-
-    var mode: Mode = .idle
+    /// No controller/controlled split: Station is either part of the mesh or not.
+    /// Which Mac is forwarding follows the pointer, and changes as it moves.
+    var isRunning = false
     var permissions = Permissions.current()
     var peers: [DiscoveredPeer] = []
     /// The arrangement of Macs. Edges are derived from it rather than chosen directly,
@@ -33,9 +29,10 @@ final class AppModel {
     /// The edge the current session actually uses, for status text.
     private(set) var lastUsedEdge: ScreenEdge = .right
 
-    /// Six digits both Macs display during a first pairing. The user confirms they
-    /// match; this is a comparison, never a secret.
-    var confirmationCode: String?
+    /// A Mac asking to join, awaiting authentication here.
+    var pendingApproval: (peer: DeviceID, name: String, code: String)?
+    /// Shown passively while another Mac decides about us.
+    var awaitingApproval: (name: String, code: String)?
 
     var connectedPeer: String?
     /// Shown while receiving so the connection can be tested directly with
@@ -59,7 +56,10 @@ final class AppModel {
         browser.onPeersChanged = { [weak self] peers in
             // Deliberately unfiltered. Silently dropping peers that fail a check meant
             // an empty list with no explanation; the UI shows why one is unusable.
-            Task { @MainActor in self?.peers = peers }
+            Task { @MainActor in
+                self?.peers = peers
+                self?.session?.updateDiscovered(peers)
+            }
         }
         localDeviceID = SessionController.hex(
             ((try? PairingStore.loadOrCreateIdentity()) ?? .generate()).publicKeyData)
@@ -163,44 +163,63 @@ final class AppModel {
 
     // MARK: - Lifecycle
 
-    func startReceiving() {
+    func start() {
         guard permissions.allGranted else {
             lastError = "Grant Accessibility and Input Monitoring first."
             return
         }
         let session = makeSession()
         self.session = session
-        mode = .receiving
+        isRunning = true
         statusMessage = "Starting…"
-        session.startReceiving()
+        LayoutStore.ensureLocal(localDeviceID, name: deviceName, in: &grid)
+        session.start(grid: grid)
     }
 
-    func startSending(to peer: DiscoveredPeer) {
-        guard permissions.allGranted else {
-            lastError = "Grant Accessibility and Input Monitoring first."
+    /// Ask a Mac we have not paired with to let us join.
+    func pair(with peer: DiscoveredPeer) {
+        guard let id = peerIdentityOrFingerprint(for: peer) else {
+            lastError = "\(peer.name) is not advertising an identity yet."
             return
         }
-        // An unplaced peer has no route to it. Default to the right rather than
-        // refusing, then let the arrangement take over once the user places it.
-        let resolvedEdge = edge(toward: peer) ?? .right
-        let session = makeSession()
-        self.session = session
-        mode = .sending
-        statusMessage = "Connecting to \(peer.name)…"
-        // A previously pinned identity authenticates without any user interaction.
-        let pinned = PairingStore.peers().first { $0.name == peer.name }?.publicKey
-        lastUsedEdge = resolvedEdge
-        session.startSending(endpoint: peer.endpoint, edge: resolvedEdge,
-                             expectedPeerIdentity: pinned)
+        session?.connectByFingerprint(id, endpoint: peer.endpoint, name: peer.name)
+        statusMessage = "Asking \(peer.name) to allow this Mac…"
+    }
+
+    private func peerIdentityOrFingerprint(for peer: DiscoveredPeer) -> String? {
+        peer.identityFingerprint
+    }
+
+    func approvePending() async {
+        guard let pending = pendingApproval else { return }
+        let result = await Authorization.confirm(
+            reason: "allow \(pending.name) to control this Mac")
+        switch result {
+        case .authorized:
+            session?.approve(peer: pending.peer)
+            pendingApproval = nil
+        case .declined:
+            session?.decline(peer: pending.peer)
+            pendingApproval = nil
+        case .unavailable(let reason):
+            lastError = reason
+        }
+    }
+
+    func declinePending() {
+        guard let pending = pendingApproval else { return }
+        session?.decline(peer: pending.peer)
+        pendingApproval = nil
     }
 
     func stop() {
         session?.stop()
         session = nil
-        mode = .idle
+        isRunning = false
         connectedPeer = nil
         controlIsRemote = false
-        confirmationCode = nil
+        pendingApproval = nil
+        awaitingApproval = nil
         listeningPort = nil
         statusMessage = "Not running"
     }
@@ -247,42 +266,9 @@ final class AppModel {
         return PairingStore.peers().first { $0.name == peer.name }?.id
     }
 
-    /// Bring the confirmation in front of the user rather than hiding it in a menu.
-    private func presentConfirmation(_ sas: String) {
-        let alert = NSAlert()
-        alert.messageText = "Pair with the other Mac?"
-        alert.informativeText = """
-            Both Macs should be showing these digits:
-
-                    \(sas)
-
-            Confirm this on BOTH Macs to finish pairing. If the digits differ,             someone may be intercepting the connection — do not pair.
-            """
-        alert.addButton(withTitle: "They match — pair")
-        alert.addButton(withTitle: "They differ")
-        alert.alertStyle = .informational
-
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            confirmPairing()
-        } else {
-            rejectPairing()
-        }
-    }
-
-    /// The user has checked the six digits match on both Macs.
-    func confirmPairing() {
-        session?.confirmPairing()
-        confirmationCode = nil
-        // Confirming locally is only half of it. Input cannot flow until the other Mac
-        // confirms too, so do not imply the pairing is finished.
-        statusMessage = "Waiting for the other Mac to confirm…"
-    }
-
-    /// The digits did not match, which means something is interposed. Tear down.
-    func rejectPairing() {
-        lastError = "The codes did not match. Someone may be intercepting the connection."
-        stop()
+    func isPaired(_ peer: DiscoveredPeer) -> Bool {
+        guard let fingerprint = peer.identityFingerprint else { return false }
+        return PairingStore.peers().contains { $0.id.hasPrefix(fingerprint) }
     }
 
     /// Why a discovered peer cannot be used, or nil if it is usable.
@@ -297,7 +283,7 @@ final class AppModel {
     }
 
     private func makeSession() -> SessionController {
-        let session = SessionController(deviceName: deviceName, deviceID: deviceID)
+        let session = SessionController(deviceName: deviceName)
         // Quitting while control is on a peer must not leave the mouse decoupled.
         session.installTerminationHandlers()
         session.clipboardSyncEnabled = clipboardSyncEnabled
@@ -318,29 +304,29 @@ final class AppModel {
         switch event {
         case .listening(let port):
             listeningPort = port
-            statusMessage = "Waiting for a Mac to connect"
-        case .needsConfirmation(let sas):
-            confirmationCode = sas
-            statusMessage = "Confirm the code matches"
-            // Both Macs must confirm, and the menu bar popover only renders while it is
-            // open, so a user who never opens it never sees the prompt. The pairing then
-            // stalls with one side reporting success and the other silently waiting.
-            presentConfirmation(sas)
-        case .paired(let peerName):
-            confirmationCode = nil
-            statusMessage = "Paired with \(peerName)"
-        case .connected(let peerName):
-            connectedPeer = peerName
-            statusMessage = "Connected to \(peerName)"
-        case .disconnected(let reason):
+            statusMessage = peers.isEmpty ? "Looking for other Macs…" : "Ready"
+        case .approvalRequested(let peer, let name, let code):
+            pendingApproval = (peer, name, code)
+            statusMessage = "\(name) wants to join"
+            Task { await approvePending() }
+        case .awaitingApproval(let name, let code):
+            awaitingApproval = (name, code)
+            statusMessage = "Waiting for approval on \(name)"
+        case .paired(let name):
+            pendingApproval = nil
+            awaitingApproval = nil
+            statusMessage = "Paired with \(name)"
+        case .peerConnected(let name):
+            awaitingApproval = nil
+            connectedPeer = name
+            statusMessage = "Connected to \(name)"
+        case .peerDisconnected(let name, let reason):
             connectedPeer = nil
             controlIsRemote = false
-            statusMessage = reason.map { "Disconnected: \($0)" } ?? "Disconnected"
-        case .controlMoved(let remote):
+            statusMessage = reason.map { "\(name): \($0)" } ?? "\(name) disconnected"
+        case .controlMoved(let remote, let peer):
             controlIsRemote = remote
-            statusMessage = remote ? "Control is on the other Mac" : "Control is here"
-        case .armed:
-            statusMessage = "Ready — move the pointer off the \(lastUsedEdge.rawValue) edge"
+            statusMessage = remote ? "Control is on \(peer ?? "another Mac")" : "Control is here"
         case .clipboardSynced(let sent, let bytes):
             let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
             lastClipboardActivity = sent ? "Clipboard sent (\(size))" : "Clipboard received (\(size))"
@@ -349,32 +335,27 @@ final class AppModel {
         case .failed(let message):
             lastError = message
             statusMessage = "Failed"
-            mode = .idle
         }
     }
 
     private static func describe(_ event: SessionController.Event) -> String {
         switch event {
-        case .listening(let port):        return "listening on \(port)"
-        case .needsConfirmation:          return "awaiting code confirmation"
-        case .paired(let name):           return "paired with \(name)"
-        case .connected(let name):        return "connected to \(name)"
-        case .disconnected(let reason):   return "disconnected\(reason.map { ": \($0)" } ?? "")"
-        case .controlMoved(let remote):   return remote ? "control -> peer" : "control -> here"
-        case .armed:                      return "capture armed"
-        case .failed(let message):        return "FAILED: \(message)"
-        case .clipboardSynced(let sent, let bytes):
-            return "clipboard \(sent ? "sent" : "received") \(bytes)B"
-        case .clipboardSkipped(let reason): return "clipboard skipped: \(reason)"
+        case .listening(let port):          return "listening on \(port)"
+        case .approvalRequested(_, let n, _): return "\(n) asked to join"
+        case .awaitingApproval(let n, _):   return "waiting for approval on \(n)"
+        case .paired(let n):                return "paired with \(n)"
+        case .peerConnected(let n):         return "connected to \(n)"
+        case .peerDisconnected(let n, _):   return "\(n) disconnected"
+        case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
+        case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"
+        case .clipboardSkipped(let r):      return "clipboard skipped: \(r)"
+        case .failed(let m):                return "FAILED: \(m)"
         }
     }
 
     /// Icon reflects whether input is currently leaving this Mac.
     var menuBarSymbol: String {
-        switch mode {
-        case .idle:      return "rectangle.on.rectangle.slash"
-        case .receiving: return controlIsRemote ? "dot.radiowaves.left.and.right" : "rectangle.on.rectangle"
-        case .sending:   return controlIsRemote ? "arrow.right.to.line" : "rectangle.on.rectangle"
-        }
+        guard isRunning else { return "rectangle.on.rectangle.slash" }
+        return controlIsRemote ? "arrow.right.to.line" : "rectangle.on.rectangle"
     }
 }

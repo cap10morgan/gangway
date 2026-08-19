@@ -116,6 +116,10 @@ public final class StationLink: @unchecked Sendable {
 
     public var endpointDescription: String { String(describing: connection.endpoint) }
 
+    /// True when this Mac dialled the peer. The side that dialled confirms its own
+    /// pairing automatically; approval is asked for on the side that was dialled.
+    public var isInitiator: Bool { role == .initiator }
+
     init(connection: NWConnection, queue: DispatchQueue,
          role: HandshakeRole, identity: Identity, expectedPeerIdentity: Data?) {
         self.connection = connection

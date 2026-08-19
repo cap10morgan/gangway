@@ -138,6 +138,13 @@ public final class EventCapture: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
+        // Never react to our own injected input. Every Mac both captures and injects
+        // now, so an unmarked injected event would be captured here and treated as the
+        // user moving the pointer.
+        if event.getIntegerValueField(.eventSourceUserData) == stationEventMarker {
+            return Unmanaged.passUnretained(event)
+        }
+
         switch mode {
         case .local:
             watchForCrossing(event)

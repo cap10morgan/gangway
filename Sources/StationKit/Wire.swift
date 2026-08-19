@@ -33,6 +33,14 @@ public enum MessageType: UInt8, Sendable {
 
 public let stationProtocolVersion = 1
 
+/// Stamped into every event Station injects, and skipped by every capture.
+///
+/// Required once any Mac can control any other. Each Mac runs a capture tap *and* an
+/// injector, so injected pointer motion is seen by the receiving Mac's own tap. Without
+/// a marker that motion trips its edge detector and it tries to seize control back,
+/// which reads to the user as the pointer fighting itself.
+public let stationEventMarker: Int64 = 0x5354_4154_494F_4E01
+
 // MARK: - Control-plane messages
 
 public struct Hello: Codable, Sendable {

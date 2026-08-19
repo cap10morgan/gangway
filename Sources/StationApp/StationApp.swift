@@ -37,14 +37,10 @@ struct MenuContent: View {
             if !model.permissions.allGranted {
                 PermissionsSection(model: model)
             } else {
-                switch model.mode {
-                case .idle:     IdleSection(model: model)
-                case .receiving: ReceivingSection(model: model)
-                case .sending:  SendingSection(model: model)
-                }
+                MeshSection(model: model)
             }
 
-            if model.mode != .idle {
+            if model.isRunning {
                 Divider()
                 ClipboardSection(model: model)
             }
@@ -83,8 +79,10 @@ struct MenuContent: View {
 
     private var footer: some View {
         HStack {
-            if model.mode != .idle {
+            if model.isRunning {
                 Button("Stop") { model.stop() }
+            } else {
+                Button("Start") { model.start() }
             }
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
@@ -159,82 +157,80 @@ struct PermissionRow: View {
     }
 }
 
-struct IdleSection: View {
+/// One view for the whole mesh. There is no controller/controlled choice to make: this
+/// Mac is either taking part or not, and which Mac is forwarding follows the pointer.
+struct MeshSection: View {
     @Bindable var model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button {
-                model.startReceiving()
-            } label: {
-                Label("Let another Mac control this one", systemImage: "arrow.down.to.line")
+        VStack(alignment: .leading, spacing: 10) {
+            if let waiting = model.awaitingApproval {
+                // Passive, not a dialog: the decision is being made on the other Mac.
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Waiting for approval on \(waiting.name)")
+                        .font(.callout)
+                    Text("That Mac should show this code:")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(waiting.code)
+                        .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                        .kerning(4)
+                }
             }
 
-            Divider()
-
-            Text("Control another Mac").font(.subheadline).bold()
-
-            if model.peers.isEmpty {
-                Text("Looking for Macs running Station on this network…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if !model.isRunning {
+                Text("Station is not running.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if model.peers.isEmpty {
+                Text("Looking for other Macs running Station…")
+                    .font(.caption).foregroundStyle(.secondary)
             } else {
-                Button {
-                    openWindow(id: "layout")
-                } label: {
+                Text("Macs on this network").font(.caption).foregroundStyle(.secondary)
+                ForEach(model.peers) { peer in
+                    PeerRow(peer: peer, model: model)
+                }
+            }
+
+            if model.isRunning {
+                Button { openWindow(id: "layout") } label: {
                     Label("Arrange screens…", systemImage: "rectangle.3.group")
                 }
                 .font(.caption)
 
-                ForEach(model.peers) { peer in
-                    if let reason = model.unusableReason(for: peer) {
-                        Label("\(peer.name) — \(reason)", systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button {
-                            model.startSending(to: peer)
-                        } label: {
-                            Label(peer.name, systemImage: "display")
-                        }
-
-                    }
-                }
+                Label("Control-Option-Escape returns control here",
+                      systemImage: "keyboard")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(12)
     }
 }
 
-struct ReceivingSection: View {
+struct PeerRow: View {
+    let peer: DiscoveredPeer
     @Bindable var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let sas = model.confirmationCode {
-                ConfirmationPrompt(sas: sas,
-                                   confirm: { model.confirmPairing() },
-                                   reject: { model.rejectPairing() })
-            } else if let peer = model.connectedPeer {
-                Label("Controlled by \(peer)", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout)
-            } else {
-                Text("Waiting for another Mac to connect…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let port = model.listeningPort {
-                    // Surfaced so a stuck pairing can be tested directly, which
-                    // separates a discovery problem from a connection problem.
-                    Text("Listening on port \(String(port))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .textSelection(.enabled)
+        HStack(spacing: 6) {
+            Image(systemName: "display")
+                .foregroundStyle(model.isPaired(peer) ? Color.green : Color.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(peer.name).font(.callout)
+                if let reason = model.unusableReason(for: peer) {
+                    Text(reason).font(.caption2).foregroundStyle(.secondary)
+                } else if model.connectedPeer == peer.name {
+                    Text("Connected").font(.caption2).foregroundStyle(.green)
+                } else if model.isPaired(peer) {
+                    Text("Paired").font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            Spacer()
+            if model.unusableReason(for: peer) == nil && !model.isPaired(peer) {
+                Button("Pair") { model.pair(with: peer) }
+                    .controlSize(.small)
+            }
         }
-        .padding(12)
     }
 }
 
@@ -304,67 +300,5 @@ struct ClipboardSection: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-    }
-}
-
-/// First-pairing check. The digits are a comparison value, not a secret: an attacker
-/// who sees them gains nothing. What they prove is that nobody is interposed, because a
-/// machine-in-the-middle would have to run two separate exchanges and could not make
-/// both Macs display the same value.
-struct ConfirmationPrompt: View {
-    let sas: String
-    let confirm: () -> Void
-    let reject: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Does the other Mac show these digits?")
-                .font(.subheadline).bold()
-            Text(sas)
-                .font(.system(size: 34, weight: .semibold, design: .monospaced))
-                .kerning(6)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-            Text("If they differ, someone may be intercepting the connection. Do not pair.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Button("They match — pair", action: confirm)
-                    .keyboardShortcut(.defaultAction)
-                Button("They differ", action: reject)
-            }
-        }
-    }
-}
-
-struct SendingSection: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let sas = model.confirmationCode {
-                ConfirmationPrompt(sas: sas,
-                                   confirm: { model.confirmPairing() },
-                                   reject: { model.rejectPairing() })
-            } else if let peer = model.connectedPeer {
-                Label("Connected to \(peer)", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout)
-            }
-            if model.confirmationCode == nil {
-                Text(model.controlIsRemote
-                     ? "Input is going to the other Mac."
-                     : "Move the pointer off the \(model.lastUsedEdge.rawValue) edge to take over.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Label("Control-Option-Escape returns control here", systemImage: "keyboard")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
     }
 }

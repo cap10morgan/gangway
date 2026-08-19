@@ -3,29 +3,33 @@ import Network
 import CoreGraphics
 import StationKit
 
-/// Owns a Station session: transport, capture, and injection.
+/// Owns one Mac's participation in a Station mesh.
+///
+/// There is no controller/controlled distinction. Every Mac listens, captures, and
+/// injects; whichever Mac the pointer is currently on is the one forwarding, and that
+/// changes as the pointer moves. The old primary/secondary split was an implementation
+/// detail showing through the interface: both roles always needed the same permissions
+/// and the same code, so the split bought nothing and forced the user to decide up
+/// front which Mac they would be sitting at.
 ///
 /// Deliberately not `@MainActor`. Forwarded input must not queue behind the UI: a hop
-/// to the main actor per event would add scheduling latency to every mouse move and
-/// risk reordering a gesture stream. UI state is delivered separately through
-/// `onEvent`, which callers are free to marshal wherever they like.
+/// per event would add scheduling latency to every mouse move and risk reordering a
+/// gesture stream.
 public final class SessionController: @unchecked Sendable {
 
     public enum Event: Sendable {
-        /// The secondary is listening and discoverable.
         case listening(port: UInt16)
-        /// First pairing with this peer: both Macs must show the same six digits and
-        /// the user must confirm. This is a comparison, not a secret.
-        case needsConfirmation(sas: String)
-        /// Pairing completed and the peer's identity was pinned.
-        case paired(peerName: String)
-        case connected(peerName: String)
-        case disconnected(reason: String?)
-        /// Control moved to the peer (true) or came back (false).
-        case controlMoved(remote: Bool)
-        case armed
+        /// Another Mac is asking to join. Approve with Touch ID; `code` is shown so a
+        /// careful user can check it matches what the other Mac displays.
+        case approvalRequested(peer: DeviceID, name: String, code: String)
+        /// We asked to join another Mac. Shown passively; the approval happens there.
+        case awaitingApproval(name: String, code: String)
+        case paired(name: String)
+        case peerConnected(name: String)
+        case peerDisconnected(name: String, reason: String?)
+        /// Control moved to a peer, or came back here.
+        case controlMoved(remote: Bool, peer: String?)
         case failed(String)
-        /// Clipboard content moved between the Macs, with a direction and byte count.
         case clipboardSynced(sent: Bool, bytes: Int)
         case clipboardSkipped(String)
     }
@@ -33,158 +37,256 @@ public final class SessionController: @unchecked Sendable {
     public var onEvent: (@Sendable (Event) -> Void)?
 
     private let deviceName: String
-    private let deviceID: UUID
     private let identity: Identity
+    public let localDeviceID: DeviceID
+
+    private let lock = NSLock()
     private var listener: StationListener?
-    /// Set while a first-time pairing is awaiting the user's SAS confirmation.
-    private var pendingPeerIdentity: Data?
-    private var pendingPeerName: String?
-    private var pendingEdge: ScreenEdge?
-    private var link: StationLink?
     private var capture: EventCapture?
     private let injection = EventInjection()
-    private var peerID: DeviceID = ""
     private let clipboard = ClipboardMonitor()
     private var clipboardAssembler = ClipboardAssembler()
     private var clipboardTransferID: UInt64 = 0
-    /// Off by default: sharing the clipboard is a meaningful privacy decision, not
-    /// something to switch on silently the first time two Macs pair.
+
+    /// Established links, keyed by the peer's proven identity.
+    private var links: [DeviceID: StationLink] = [:]
+    /// Links still mid-handshake, so not yet attributable to an identity.
+    private var pending: [ObjectIdentifier: StationLink] = [:]
+    /// Names last seen for each peer, for user-facing messages.
+    private var names: [DeviceID: String] = [:]
+    /// Where each discovered peer can be reached.
+    private var endpoints: [DeviceID: NWEndpoint] = [:]
+
+    private var grid = ScreenLayoutGrid()
+
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
     }
 
-    public init(deviceName: String, deviceID: UUID = UUID(), identity: Identity? = nil) {
+    public init(deviceName: String, identity: Identity? = nil) {
         self.deviceName = deviceName
-        self.deviceID = deviceID
-        // A missing identity is not recoverable, and generating a throwaway one would
-        // silently break every existing pairing, so fall back only in-memory.
         self.identity = identity ?? ((try? PairingStore.loadOrCreateIdentity()) ?? .generate())
+        self.localDeviceID = Self.hex(self.identity.publicKeyData)
     }
 
-    public var publicIdentity: Data { identity.publicKeyData }
-
-    /// Hex of a public key, the form used to identify a Mac in an arrangement.
     public static func hex(_ data: Data) -> DeviceID {
         data.map { String(format: "%02x", $0) }.joined()
     }
 
-    public var localDeviceID: DeviceID { Self.hex(identity.publicKeyData) }
+    public var publicIdentity: Data { identity.publicKeyData }
 
-    // MARK: - Clipboard
+    // MARK: - Lifecycle
 
-    private func startClipboard() {
-        clipboard.onSkipped = { [weak self] reason in
-            self?.onEvent?(.clipboardSkipped(reason))
-        }
-        clipboard.onLocalChange = { [weak self] content in
-            self?.sendClipboard(content)
-        }
-        // The timer needs the main run loop, and callers may enable this from anywhere.
-        DispatchQueue.main.async { [weak self] in self?.clipboard.start() }
-    }
-
-    private func sendClipboard(_ content: ClipboardContent) {
-        guard let link, let payload = try? content.encoded() else { return }
-        clipboardTransferID &+= 1
-        for chunk in ClipboardTransfer.chunks(of: payload, transferID: clipboardTransferID) {
-            link.send(.clipboard, chunk)
-        }
-        onEvent?(.clipboardSynced(sent: true, bytes: payload.count))
-    }
-
-    private func receiveClipboard(_ frame: Data) {
-        do {
-            guard let payload = try clipboardAssembler.accept(frame) else { return }
-            let content = try ClipboardContent.decode(payload)
-            clipboard.apply(content)
-            onEvent?(.clipboardSynced(sent: false, bytes: payload.count))
-        } catch {
-            onEvent?(.clipboardSkipped("could not read the clipboard from the other Mac"))
-        }
-    }
-
-    /// Confirm the SAS matched on both Macs. Pins the peer so future connections need
-    /// no user interaction.
-    public func confirmPairing() {
-        guard let link, let peerKey = pendingPeerIdentity else { return }
-        PairingStore.upsert(PairingStore.Peer(publicKey: peerKey,
-                                              name: pendingPeerName ?? "Mac",
-                                              edge: pendingEdge ?? .right))
-        pendingPeerIdentity = nil
-        link.confirmPairing()
-        onEvent?(.paired(peerName: pendingPeerName ?? "Mac"))
-    }
-
-    /// Ensure the tap is released and the cursor restored if the process is signalled.
-    /// Without this, quitting while control is on a peer leaves the local mouse
-    /// decoupled and the pointer hidden.
-    public func installTerminationHandlers() {
-        CursorControl.addTerminationCleanup { [weak self] in self?.stop() }
-    }
-
-    // MARK: - Secondary
-
-    /// Listen for a primary and inject whatever it sends.
-    public func startReceiving() {
+    /// Begin listening, capturing, and reconnecting to known peers.
+    public func start(grid: ScreenLayoutGrid) {
         stop()
-        let screens = ScreenGeometry.localScreens()
+        self.grid = grid
 
-        let listener = StationListener(deviceName: deviceName, identity: identity,
-                                       knownPeers: { PairingStore.knownPeerKeys() })
-        listener.onError = { [weak self] error in
-            self?.onEvent?(.failed(error.localizedDescription))
-        }
-        listener.onReady = { [weak self] port in
-            self?.onEvent?(.listening(port: port.rawValue))
-        }
-        listener.onLink = { [weak self] link in
-            guard let self else { return }
-            self.link = link
-            link.onPeerIdentity = { [weak self] key, known in
-                self?.pendingPeerIdentity = known ? nil : key
-                self?.pendingPeerName = PairingStore.peer(withKey: key)?.name
-            }
-            link.onPhase = { [weak self] phase in
-                switch phase {
-                case .awaitingConfirmation(let sas): self?.onEvent?(.needsConfirmation(sas: sas))
-                case .failed(let reason):            self?.onEvent?(.disconnected(reason: reason))
-                case .cancelled:                     self?.onEvent?(.disconnected(reason: nil))
-                default: break
-                }
-            }
-            link.onMessage = { [weak self] type, payload in
-                self?.handleIncoming(type: type, payload: payload, link: link, screens: screens)
-            }
-            // Not started here: StationListener starts the link once handlers are set.
-            // Starting it twice runs two concurrent receive loops on one connection,
-            // which interleave reads and corrupt framing.
-        }
+        let listener = StationListener(deviceName: deviceName, identity: identity)
+        listener.onError = { [weak self] in self?.onEvent?(.failed($0.localizedDescription)) }
+        listener.onReady = { [weak self] port in self?.onEvent?(.listening(port: port.rawValue)) }
+        listener.onLink = { [weak self] link in self?.adopt(link, expectedName: nil) }
         do {
             try listener.start()
             self.listener = listener
         } catch {
             onEvent?(.failed(error.localizedDescription))
+            return
+        }
+        startCapture()
+    }
+
+    public func stop() {
+        clipboard.stop()
+        if let capture {
+            if Thread.isMainThread { capture.stop() }
+            else { DispatchQueue.main.sync { capture.stop() } }
+        }
+        capture = nil
+        lock.lock()
+        let all = Array(links.values) + Array(pending.values)
+        links.removeAll()
+        pending.removeAll()
+        lock.unlock()
+        all.forEach { $0.cancel() }
+        listener?.stop()
+        listener = nil
+    }
+
+    /// Re-apply the arrangement without tearing down connections.
+    public func updateLayout(_ grid: ScreenLayoutGrid) {
+        self.grid = grid
+        capture?.layout = grid.layout(for: localDeviceID)
+    }
+
+    /// Peers seen on the network, so links can be opened to the ones we know.
+    public func updateDiscovered(_ peers: [DiscoveredPeer]) {
+        lock.lock()
+        for peer in peers {
+            guard let fingerprint = peer.identityFingerprint,
+                  let known = PairingStore.peers().first(where: { $0.id.hasPrefix(fingerprint) })
+            else { continue }
+            endpoints[known.id] = peer.endpoint
+            names[known.id] = peer.name
+        }
+        let targets = endpoints.keys.filter { links[$0] == nil && shouldInitiate(to: $0) }
+        lock.unlock()
+
+        // Reconnect to Macs already paired with. A peer that has never been paired is
+        // left alone: dialling it would put an unexpected Touch ID prompt on someone
+        // else's screen.
+        let known = Set(PairingStore.peers().map(\.id))
+        for id in targets where known.contains(id) {
+            connect(to: id)
         }
     }
 
-    private func handleIncoming(type: MessageType, payload: Data,
-                                link: StationLink, screens: ScreenSet) {
+    /// Deterministic tie-break so two Macs do not dial each other simultaneously and
+    /// end up with a redundant pair of links.
+    private func shouldInitiate(to peer: DeviceID) -> Bool {
+        localDeviceID < peer
+    }
+
+    /// Dial a Mac we have not paired with yet, identified only by the fingerprint it
+    /// advertises. Its full identity is learned during the handshake.
+    public func connectByFingerprint(_ fingerprint: String, endpoint: NWEndpoint, name: String) {
+        lock.lock()
+        let already = links.values.contains { _ in false }
+        lock.unlock()
+        guard !already else { return }
+        let link = StationLink(endpoint: endpoint, identity: identity, expectedPeerIdentity: nil)
+        adopt(link, expectedName: name)
+        link.start()
+    }
+
+    /// Open a link to a peer, pairing if this is the first time.
+    public func connect(to peer: DeviceID) {
+        lock.lock()
+        let endpoint = endpoints[peer]
+        let alreadyLinked = links[peer] != nil
+        lock.unlock()
+        guard let endpoint, !alreadyLinked else { return }
+
+        let pinned = PairingStore.peers().first { $0.id == peer }?.publicKey
+        let link = StationLink(endpoint: endpoint, identity: identity,
+                               expectedPeerIdentity: pinned)
+        adopt(link, expectedName: names[peer])
+        link.start()
+    }
+
+    // MARK: - Links
+
+    private func adopt(_ link: StationLink, expectedName: String?) {
+        lock.lock()
+        pending[ObjectIdentifier(link)] = link
+        lock.unlock()
+
+        nonisolated(unsafe) var peerID: DeviceID?
+
+        link.onPeerIdentity = { [weak self] key, known in
+            guard let self else { return }
+            let id = Self.hex(key)
+            peerID = id
+            self.lock.lock()
+            self.pending.removeValue(forKey: ObjectIdentifier(link))
+            self.links[id] = link
+            if let expectedName { self.names[id] = expectedName }
+            self.lock.unlock()
+            _ = known
+        }
+
+        link.onPhase = { [weak self] phase in
+            guard let self else { return }
+            switch phase {
+            case .awaitingConfirmation(let code):
+                let id = peerID ?? ""
+                let name = self.names[id] ?? expectedName ?? "another Mac"
+                if link.isInitiator {
+                    // We asked to join, so approval happens on the other Mac. Confirm
+                    // our side immediately and show the code for comparison.
+                    link.confirmPairing()
+                    self.onEvent?(.awaitingApproval(name: name, code: code))
+                } else {
+                    self.onEvent?(.approvalRequested(peer: id, name: name, code: code))
+                }
+            case .ready:
+                let id = peerID ?? ""
+                let name = self.names[id] ?? expectedName ?? "another Mac"
+                try? link.send(.hello, json: Hello(deviceID: UUID(),
+                                                   deviceName: self.deviceName,
+                                                   role: .primary))
+                self.onEvent?(.peerConnected(name: name))
+            case .failed(let reason):
+                self.drop(link, id: peerID, reason: reason)
+            case .cancelled:
+                self.drop(link, id: peerID, reason: nil)
+            case .connecting, .handshaking:
+                break
+            }
+        }
+
+        link.onMessage = { [weak self] type, payload in
+            self?.handle(type: type, payload: payload, link: link, peer: peerID)
+        }
+    }
+
+    private func drop(_ link: StationLink, id: DeviceID?, reason: String?) {
+        lock.lock()
+        pending.removeValue(forKey: ObjectIdentifier(link))
+        if let id { links.removeValue(forKey: id) }
+        let name = id.flatMap { names[$0] } ?? "a Mac"
+        lock.unlock()
+        onEvent?(.peerDisconnected(name: name, reason: reason))
+    }
+
+    /// Called after the person here has authenticated.
+    public func approve(peer: DeviceID) {
+        lock.lock()
+        let link = links[peer]
+        lock.unlock()
+        guard let link else { return }
+        link.confirmPairing()
+
+        let name = names[peer] ?? "Mac"
+        if PairingStore.peers().first(where: { $0.id == peer }) == nil,
+           let key = Data(hexString: peer) {
+            PairingStore.upsert(PairingStore.Peer(publicKey: key, name: name,
+                                                  edge: .right))
+        }
+        onEvent?(.paired(name: name))
+    }
+
+    public func decline(peer: DeviceID) {
+        lock.lock()
+        let link = links[peer]
+        lock.unlock()
+        link?.cancel()
+    }
+
+    private func handle(type: MessageType, payload: Data, link: StationLink, peer: DeviceID?) {
         switch type {
         case .hello:
             let name = (try? JSONDecoder().decode(Hello.self, from: payload))?.deviceName ?? "Mac"
-            pendingPeerName = name
-            onEvent?(.connected(peerName: name))
-            // The primary needs our geometry to scale pointer motion correctly.
-            try? link.send(.screens, json: screens)
+            if let peer {
+                lock.lock(); names[peer] = name; lock.unlock()
+            }
+            try? link.send(.screens, json: ScreenGeometry.localScreens())
+
+        case .screens:
+            guard let peer,
+                  let screens = try? JSONDecoder().decode(ScreenSet.self, from: payload) else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.capture?.setPeerBounds(screens.bounds, for: peer)
+            }
 
         case .enterScreen:
             guard let msg = EnterScreen.decode(payload) else { return }
             injection.enter(at: NormalizedPoint(x: msg.normalizedX, y: msg.normalizedY))
-            onEvent?(.controlMoved(remote: true))
+            onEvent?(.controlMoved(remote: true, peer: peer.flatMap { names[$0] }))
 
         case .leaveScreen:
             injection.leave()
-            onEvent?(.controlMoved(remote: false))
+            onEvent?(.controlMoved(remote: false, peer: nil))
 
         case .input:
             guard let event = InputEvent.decode(payload) else { return }
@@ -198,106 +300,99 @@ public final class SessionController: @unchecked Sendable {
         }
     }
 
-    // MARK: - Primary
+    // MARK: - Capture
 
-    /// Connect to a peer and forward input when the pointer crosses `edge`.
-    public func startSending(host: String, port: UInt16, edge: ScreenEdge,
-                             expectedPeerIdentity: Data? = nil) {
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            onEvent?(.failed("Invalid port \(port)"))
-            return
-        }
-        startSending(endpoint: .hostPort(host: NWEndpoint.Host(host), port: nwPort),
-                     edge: edge, expectedPeerIdentity: expectedPeerIdentity)
-    }
-
-    /// Connect to a peer discovered over Bonjour.
-    public func startSending(endpoint: NWEndpoint, edge: ScreenEdge,
-                             expectedPeerIdentity: Data? = nil) {
-        stop()
-        pendingEdge = edge
-        // Identify the peer by whatever identity it proves during the handshake; until
-        // then, a placeholder that the capture layer keys its bounds against.
-        peerID = expectedPeerIdentity.map(Self.hex) ?? "pending-peer"
-        let capture = EventCapture(layout: Layout(placements: [edge: peerID]))
+    private func startCapture() {
+        let capture = EventCapture(layout: grid.layout(for: localDeviceID))
         self.capture = capture
 
-        let link = StationLink(endpoint: endpoint, identity: identity,
-                               expectedPeerIdentity: expectedPeerIdentity)
-        self.link = link
-
-        capture.onEvent = { [weak link] event in link?.send(.input, event.encode()) }
-        capture.onEnterPeer = { [weak self, weak link] _, at in
-            link?.send(.enterScreen, EnterScreen(normalizedX: at.x, normalizedY: at.y).encode())
-            self?.onEvent?(.controlMoved(remote: true))
+        capture.onEvent = { [weak self] event in
+            guard let self, case .forwarding(let peer) = capture.mode else { return }
+            self.link(for: peer)?.send(.input, event.encode())
         }
-        capture.onReturnLocal = { [weak self, weak link] _, _ in
-            link?.send(.leaveScreen, Data())
-            self?.onEvent?(.controlMoved(remote: false))
-        }
-        capture.onEscapeHatch = { [weak self, weak link] in
-            link?.send(.leaveScreen, Data())
-            self?.onEvent?(.controlMoved(remote: false))
-        }
-
-        link.onPeerIdentity = { [weak self] key, known in
-            self?.pendingPeerIdentity = known ? nil : key
-        }
-        link.onPhase = { [weak self] phase in
+        capture.onEnterPeer = { [weak self] peer, at in
             guard let self else { return }
-            switch phase {
-            case .ready:
-                try? link.send(.hello, json: Hello(deviceID: self.deviceID,
-                                                   deviceName: self.deviceName,
-                                                   role: .primary))
-            case .awaitingConfirmation(let sas):
-                self.onEvent?(.needsConfirmation(sas: sas))
-            case .failed(let reason):
-                self.onEvent?(.failed(reason))
-                self.stop()
-            case .cancelled:
-                self.onEvent?(.disconnected(reason: nil))
-            case .connecting, .handshaking:
-                break
-            }
+            self.link(for: peer)?.send(.enterScreen,
+                                       EnterScreen(normalizedX: at.x, normalizedY: at.y).encode())
+            self.onEvent?(.controlMoved(remote: true, peer: self.names[peer]))
         }
-        link.onMessage = { [weak self] type, payload in
+        capture.onReturnLocal = { [weak self] _, _ in
             guard let self else { return }
-            if type == .clipboard {
-                self.receiveClipboard(payload)
-                return
-            }
-            guard type == .screens,
-                  let peerScreens = try? JSONDecoder().decode(ScreenSet.self, from: payload) else { return }
-            // The tap must be created on the thread running the run loop it attaches to.
-            DispatchQueue.main.async {
-                capture.setPeerBounds(peerScreens.bounds, for: self.peerID)
-                do {
-                    try capture.start()
-                    self.onEvent?(.armed)
-                } catch {
-                    self.onEvent?(.failed(error.localizedDescription))
-                }
+            self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
+            self.onEvent?(.controlMoved(remote: false, peer: nil))
+        }
+        capture.onEscapeHatch = { [weak self] in
+            guard let self else { return }
+            self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
+            self.onEvent?(.controlMoved(remote: false, peer: nil))
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            do {
+                try capture.start()
+            } catch {
+                self?.onEvent?(.failed(error.localizedDescription))
             }
         }
-        link.start()
     }
 
-    public func stop() {
-        clipboard.stop()
-        // Tearing down the capture releases the cursor, so it must happen on the
-        // run-loop thread and must happen even if the link is already gone.
-        if let capture {
-            if Thread.isMainThread {
-                capture.stop()
-            } else {
-                DispatchQueue.main.sync { capture.stop() }
-            }
+    private func link(for peer: DeviceID) -> StationLink? {
+        lock.lock(); defer { lock.unlock() }
+        return links[peer]
+    }
+
+    private func allLinks() -> [StationLink] {
+        lock.lock(); defer { lock.unlock() }
+        return Array(links.values)
+    }
+
+    public func installTerminationHandlers() {
+        CursorControl.addTerminationCleanup { [weak self] in self?.stop() }
+    }
+
+    // MARK: - Clipboard
+
+    private func startClipboard() {
+        clipboard.onSkipped = { [weak self] in self?.onEvent?(.clipboardSkipped($0)) }
+        clipboard.onLocalChange = { [weak self] content in self?.sendClipboard(content) }
+        DispatchQueue.main.async { [weak self] in self?.clipboard.start() }
+    }
+
+    private func sendClipboard(_ content: ClipboardContent) {
+        guard let payload = try? content.encoded() else { return }
+        clipboardTransferID &+= 1
+        let chunks = ClipboardTransfer.chunks(of: payload, transferID: clipboardTransferID)
+        for link in allLinks() {
+            for chunk in chunks { link.send(.clipboard, chunk) }
         }
-        capture = nil
-        link?.cancel()
-        link = nil
-        listener?.stop()
-        listener = nil
+        if !allLinks().isEmpty {
+            onEvent?(.clipboardSynced(sent: true, bytes: payload.count))
+        }
+    }
+
+    private func receiveClipboard(_ frame: Data) {
+        do {
+            guard let payload = try clipboardAssembler.accept(frame) else { return }
+            clipboard.apply(try ClipboardContent.decode(payload))
+            onEvent?(.clipboardSynced(sent: false, bytes: payload.count))
+        } catch {
+            onEvent?(.clipboardSkipped("could not read the clipboard from the other Mac"))
+        }
+    }
+}
+
+extension Data {
+    /// Parse a hex identity back into bytes.
+    init?(hexString: String) {
+        guard hexString.count % 2 == 0 else { return nil }
+        var bytes = Data(capacity: hexString.count / 2)
+        var i = hexString.startIndex
+        while i < hexString.endIndex {
+            let j = hexString.index(i, offsetBy: 2)
+            guard let byte = UInt8(hexString[i..<j], radix: 16) else { return nil }
+            bytes.append(byte)
+            i = j
+        }
+        self = bytes
     }
 }

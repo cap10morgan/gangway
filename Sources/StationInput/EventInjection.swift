@@ -80,6 +80,8 @@ public final class EventInjection: @unchecked Sendable {
             cgEvent.location = target
         }
 
+        // Mark it as ours so this Mac's own capture skips it.
+        cgEvent.setIntegerValueField(.eventSourceUserData, value: stationEventMarker)
         cgEvent.post(tap: .cghidEventTap)
         return true
     }

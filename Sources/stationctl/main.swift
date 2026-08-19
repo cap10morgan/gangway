@@ -65,93 +65,70 @@ let command = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "help
 
 switch command {
 
-case "secondary":
+case "run":
+    // One command, because there is no controller/controlled distinction any more.
+    // Every Mac listens, captures and injects; whichever one the pointer is on is the
+    // one forwarding.
     let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
     session.installTerminationHandlers()
+    session.clipboardSyncEnabled = CommandLine.arguments.contains("--clipboard")
+
+    let browser = PeerBrowser()
+    browser.onPeersChanged = { peers in
+        session.updateDiscovered(peers)
+        for p in peers {
+            log("discover", "\(p.name) at \(p.host):\(p.port) id=\(p.identityFingerprint ?? "?")")
+        }
+    }
 
     session.onEvent = { event in
         switch event {
         case .listening(let port):
-            log("secondary", "listening on port \(port)")
+            log("station", "listening on \(port)")
+        case .approvalRequested(let peer, let name, let code):
+            // In the app this is a Touch ID prompt. The CLI cannot show one, so it
+            // asks on the terminal instead; the security question is the same.
             print("")
-            print("  Run on the primary Mac:")
-            print("    stationctl primary --host <this-mac-ip> --port \(port) --edge right")
+            print("  \(name) wants to control this Mac.")
+            print("  It should be showing the code: \(code)")
+            print("  Type  yes  to allow.")
             print("")
-        case .needsConfirmation(let sas):
-            promptForConfirmation(sas) { session.confirmPairing() }
+            fflush(stdout)
+            guard isatty(FileHandle.standardInput.fileDescriptor) == 1 else {
+                log("station", "no terminal attached; cannot ask for approval")
+                return
+            }
+            DispatchQueue.global().async {
+                let answer = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if answer == "yes" || answer == "y" { session.approve(peer: peer) }
+                else { session.decline(peer: peer) }
+            }
+        case .awaitingApproval(let name, let code):
+            log("station", "waiting for approval on \(name); code \(code)")
         case .paired(let name):
-            log("secondary", "PAIRED with \(name) — future connections need no confirmation")
-        case .connected(let name):
-            log("secondary", "primary connected: \(name)")
-        case .disconnected(let reason):
-            log("secondary", "disconnected\(reason.map { ": \($0)" } ?? "")")
-        case .controlMoved(let remote):
-            log("secondary", remote ? "control ARRIVED" : "control LEFT")
-        case .armed:
-            break
+            log("station", "paired with \(name)")
+        case .peerConnected(let name):
+            log("station", "connected to \(name)")
+        case .peerDisconnected(let name, let reason):
+            log("station", "\(name) disconnected\(reason.map { ": \($0)" } ?? "")")
+        case .controlMoved(let remote, let peer):
+            log("station", remote ? "control -> \(peer ?? "peer")" : "control -> here")
         case .clipboardSynced(let sent, let bytes):
-            log("secondary", "clipboard \(sent ? "sent" : "received") (\(bytes) bytes)")
+            log("station", "clipboard \(sent ? "sent" : "received") (\(bytes) bytes)")
         case .clipboardSkipped(let reason):
-            log("secondary", "clipboard skipped: \(reason)")
+            log("station", "clipboard skipped: \(reason)")
         case .failed(let message):
-            log("secondary", "failed: \(message)")
+            log("station", "failed: \(message)")
         }
     }
-    session.clipboardSyncEnabled = CommandLine.arguments.contains("--clipboard")
-    if session.clipboardSyncEnabled { log("secondary", "clipboard sync ON") }
-    log("secondary", "identity \(session.publicIdentity.prefix(4).map { String(format: "%02x", $0) }.joined())")
-    log("secondary", "displays: \(ScreenGeometry.localScreens().screens.count), bounds \(ScreenGeometry.globalBounds)")
-    session.startReceiving()
-    CFRunLoopRun()
 
-case "primary":
-    guard let host = flag("host"), let portString = flag("port"), let port = UInt16(portString) else {
-        print("usage: stationctl primary --host <ip> --port <port> [--edge right]")
-        exit(2)
-    }
-    let edge = ScreenEdge(rawValue: flag("edge") ?? "right") ?? .right
-    let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
-    session.installTerminationHandlers()
-
-    // Reuse a pinned identity for this peer if we have paired with it before.
-    let known = PairingStore.peers().first
-    if known != nil { log("primary", "using pinned identity for \(known!.name)") }
-
-    session.onEvent = { event in
-        switch event {
-        case .needsConfirmation(let sas):
-            promptForConfirmation(sas) { session.confirmPairing() }
-        case .paired(let name):
-            log("primary", "PAIRED with \(name)")
-        case .armed:
-            log("primary", "capture ARMED")
-            print("")
-            print("  Move the pointer off the \(edge.rawValue) edge to take over the peer.")
-            print("  Control-Option-Escape forces control back at any time.")
-            print("")
-        case .connected(let name):
-            log("primary", "connected to \(name)")
-        case .controlMoved(let remote):
-            log("primary", remote ? "control -> PEER" : "control -> LOCAL")
-        case .disconnected(let reason):
-            log("primary", "disconnected\(reason.map { ": \($0)" } ?? "")")
-        case .clipboardSynced(let sent, let bytes):
-            log("primary", "clipboard \(sent ? "sent" : "received") (\(bytes) bytes)")
-        case .clipboardSkipped(let reason):
-            log("primary", "clipboard skipped: \(reason)")
-        case .failed(let message):
-            log("primary", "failed: \(message)")
-            exit(1)
-        case .listening:
-            break
-        }
-    }
-    session.clipboardSyncEnabled = CommandLine.arguments.contains("--clipboard")
-    if session.clipboardSyncEnabled { log("primary", "clipboard sync ON") }
-    log("primary", "identity \(session.publicIdentity.prefix(4).map { String(format: "%02x", $0) }.joined())")
-    log("primary", "local bounds \(ScreenGeometry.globalBounds), peer on \(edge.rawValue) edge")
-    session.startSending(host: host, port: port, edge: edge,
-                         expectedPeerIdentity: known?.publicKey)
+    log("station", "identity \(session.localDeviceID.prefix(8))")
+    log("station", "displays: \(ScreenGeometry.localScreens().screens.count), bounds \(ScreenGeometry.globalBounds)")
+    var grid = LayoutStore.load()
+    LayoutStore.ensureLocal(session.localDeviceID, name: Host.current().localizedName ?? "Mac", in: &grid)
+    session.start(grid: grid)
+    browser.start()
+    log("station", "Control-Option-Escape always returns control here")
     CFRunLoopRun()
 
 case "connect":
@@ -392,12 +369,10 @@ default:
     print("""
     stationctl — Station command-line driver
 
-      stationctl secondary
-          Receive and inject input. Prints the port to use on the primary.
-
-      stationctl primary --host <ip> --port <port> [--edge right]
-          Capture input and forward it when the pointer crosses the given edge.
-          Control-Option-Escape always returns control locally.
+      stationctl run [--clipboard]
+          Join the mesh: listen, capture and inject. Any Mac can control any
+          other; whichever one the pointer is on is the one forwarding.
+          Control-Option-Escape always returns control here.
 
       stationctl connect --host <ip> --port <port>
           Handshake against a secondary without capturing input. Safe on one Mac.
@@ -421,7 +396,7 @@ default:
       stationctl cursor-selftest [exit|signal]
           Hide the cursor, then verify it is restored on that exit path.
 
-    First pairing shows six digits on both Macs. They are a comparison, not a
-    secret: confirm they match and the peer identity is pinned for future use.
+    First pairing asks for approval on the Mac being joined, showing six digits
+    that the other Mac also displays. They are a comparison, not a secret.
     """)
 }
