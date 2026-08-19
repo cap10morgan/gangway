@@ -448,18 +448,15 @@ public final class StationListener: @unchecked Sendable {
     private let deviceName: String
     private let identity: Identity
     /// Look up a pinned identity for an incoming peer once it identifies itself.
-    private let knownPeers: @Sendable () -> [Data]
 
     public var onLink: (@Sendable (StationLink) -> Void)?
     public var onError: (@Sendable (Error) -> Void)?
     public var onReady: (@Sendable (NWEndpoint.Port) -> Void)?
 
     public init(deviceName: String, identity: Identity,
-                knownPeers: @escaping @Sendable () -> [Data] = { [] },
                 queue: DispatchQueue = .global(qos: .userInteractive)) {
         self.deviceName = deviceName
         self.identity = identity
-        self.knownPeers = knownPeers
         self.queue = queue
     }
 

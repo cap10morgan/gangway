@@ -226,6 +226,14 @@ public final class SessionController: @unchecked Sendable {
                     // input, and doing it up front would let whoever answered control
                     // this Mac before anyone approved anything. Wait for word back.
                     self.onEvent?(.awaitingApproval(name: name, code: code))
+                } else if PairingStore.peers().contains(where: { $0.id == id }) {
+                    // Already paired. The handshake verified a signature over this
+                    // session's transcript with that exact key, so the peer has proven
+                    // it is the Mac we pinned; asking again would train the user to
+                    // approve prompts without reading them.
+                    link.confirmPairing()
+                    link.announceApproval()
+                    self.onEvent?(.peerConnected(name: name))
                 } else {
                     self.onEvent?(.approvalRequested(peer: id, name: name, code: code))
                 }

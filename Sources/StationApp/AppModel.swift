@@ -61,6 +61,7 @@ final class AppModel {
     private(set) var recentEvents: [String] = []
 
     private var session: SessionController?
+    private let codePanel = PairingCodePanel()
     private let browser = PeerBrowser()
     private let deviceName = Host.current().localizedName ?? "Mac"
     private let deviceID = AppModel.persistentDeviceID()
@@ -216,11 +217,20 @@ final class AppModel {
         // The code must be in the authentication reason itself. It is the only thing
         // that distinguishes the real Mac from something interposed, and a prompt that
         // merely says "allow X" invites approving without looking.
+        // LAContext renders the reason as plain text with no styling available, so the
+        // code is set apart with blank lines and wide digit spacing. It is the only
+        // thing distinguishing the real Mac from something interposed, so it has to be
+        // the most legible part of the prompt.
+        let spaced = pending.code.map(String.init).joined(separator: "  ")
         let result = await Authorization.confirm(
             reason: """
                 allow \(pending.name) to control this Mac.
 
-                Approve only if \(pending.name) is showing this same code:  \(pending.code)
+
+                \(spaced)
+
+
+                Approve only if \(pending.name) is showing this same code.
                 """)
         switch result {
         case .authorized:
@@ -248,6 +258,7 @@ final class AppModel {
         controlIsRemote = false
         pendingApproval = nil
         awaitingApproval = nil
+        codePanel.hide()
         listeningPort = nil
         statusMessage = "Not running"
     }
@@ -361,15 +372,21 @@ final class AppModel {
         case .awaitingApproval(let name, let code):
             awaitingApproval = (name, code)
             statusMessage = "Waiting for approval on \(name)"
+            // On screen by itself: the code exists to be compared against the other
+            // Mac, and one buried in a popover is one nobody compares.
+            codePanel.show(name: name, code: code)
         case .paired(let name):
             pendingApproval = nil
             awaitingApproval = nil
+            codePanel.hide()
             statusMessage = "Paired with \(name)"
         case .peerConnected(let name):
             awaitingApproval = nil
+            codePanel.hide()
             connectedPeer = name
             statusMessage = "Connected to \(name)"
         case .peerDisconnected(let name, let reason):
+            codePanel.hide()
             connectedPeer = nil
             controlIsRemote = false
             statusMessage = reason.map { "\(name): \($0)" } ?? "\(name) disconnected"
@@ -382,6 +399,7 @@ final class AppModel {
         case .clipboardSkipped(let reason):
             lastClipboardActivity = reason
         case .failed(let message):
+            codePanel.hide()
             lastError = message
             statusMessage = "Failed"
         }
