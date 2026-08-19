@@ -10,14 +10,7 @@ struct StationApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
-                // The minimum height is a workaround, not a design choice. On macOS 27
-                // beta a short MenuBarExtra panel is built without its
-                // NSVisualEffectView, so nothing paints the rounded translucent
-                // background and it renders as a bare square sitting low in its own
-                // window. Past a certain content height the effect view appears and it
-                // looks correct. Remove this once the platform bug is fixed.
                 .frame(width: 320)
-                .frame(minHeight: 340)
         } label: {
             Image(systemName: model.menuBarSymbol)
         }
@@ -194,15 +187,10 @@ struct MeshSection: View {
                 }
             }
 
-            if !model.isEnabled {
-                Text("Station is switched off.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if !model.isRunning {
-                Text("Starting…")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if model.peers.isEmpty {
-                Text("Looking for other Macs running Station…")
-                    .font(.caption).foregroundStyle(.secondary)
+            if !model.isEnabled || !model.isRunning || model.peers.isEmpty {
+                // Nothing here: the header already says what is happening, and
+                // repeating it just made the panel taller.
+                EmptyView()
             } else {
                 Text("Macs on this network").font(.caption).foregroundStyle(.secondary)
                 ForEach(model.peers) { peer in
@@ -276,11 +264,13 @@ struct LoginItemSection: View {
                         .controlSize(.small)
                 }
 
-            case .unavailable(let reason):
+            case .unavailable:
+                // Almost always because the app is still in a build directory. Saying
+                // what to do about it is more use than restating the state.
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Start at login unavailable")
+                    Text("Start at login needs Station in Applications")
                         .font(.callout)
-                    Text(reason)
+                    Text("Move Station.app to your Applications folder, then reopen it.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
