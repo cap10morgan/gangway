@@ -8,6 +8,7 @@ import StationInput
 /// popover dismisses whenever focus moves, which drag-and-drop does constantly.
 struct LayoutEditorView: View {
     @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
 
     private let cell: CGFloat = 108
     private let gap: CGFloat = 10
@@ -115,7 +116,9 @@ struct LayoutEditorView: View {
                     .foregroundStyle(.orange)
             }
             Spacer()
-            Button("Done") { model.saveLayout() }
+            // Every drag already saves, so this only closes the window. It used to
+            // call save and nothing else, which looked like a button that did nothing.
+            Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
         }
     }

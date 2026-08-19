@@ -50,8 +50,23 @@ public struct ScreenLayoutGrid: Codable, Sendable, Equatable {
 
     public private(set) var placements: [Placement]
 
-    public init(placements: [Placement] = []) {
+    /// When this arrangement was last edited. An arrangement describes where the Macs
+    /// sit relative to each other, which is the same fact on every Mac, so they share
+    /// one and the most recently edited copy wins.
+    public private(set) var updatedAt: Date
+
+    public init(placements: [Placement] = [], updatedAt: Date = .distantPast) {
         self.placements = placements
+        self.updatedAt = updatedAt
+    }
+
+    /// True when `other` describes a newer arrangement than this one.
+    public func isSuperseded(by other: ScreenLayoutGrid) -> Bool {
+        other.updatedAt > updatedAt
+    }
+
+    private mutating func touch() {
+        updatedAt = Date()
     }
 
     // MARK: - Lookup
@@ -114,6 +129,7 @@ public struct ScreenLayoutGrid: Codable, Sendable, Equatable {
         } else {
             placements.append(Placement(id: id, position: position, name: name))
         }
+        touch()
     }
 
     private mutating func setPosition(_ position: GridPosition, for id: DeviceID) {
@@ -123,6 +139,7 @@ public struct ScreenLayoutGrid: Codable, Sendable, Equatable {
 
     public mutating func remove(_ id: DeviceID) {
         placements.removeAll { $0.id == id }
+        touch()
     }
 
     public mutating func rename(_ id: DeviceID, to name: String) {

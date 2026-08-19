@@ -28,6 +28,8 @@ public final class SessionController: @unchecked Sendable {
         case peerConnected(name: String)
         /// A peer's real name arrived after it was stored under a placeholder.
         case peerRenamed(peer: DeviceID, name: String)
+        /// A newer arrangement arrived from another Mac.
+        case layoutChanged(ScreenLayoutGrid)
         case peerDisconnected(name: String, reason: String?)
         /// Control moved to a peer, or came back here.
         case controlMoved(remote: Bool, peer: String?)
@@ -121,9 +123,17 @@ public final class SessionController: @unchecked Sendable {
     }
 
     /// Re-apply the arrangement without tearing down connections.
-    public func updateLayout(_ grid: ScreenLayoutGrid) {
+    ///
+    /// - Parameter broadcast: whether to tell the other Macs. False when applying an
+    ///   arrangement that came *from* a peer, which would otherwise echo back and
+    ///   forth between them forever.
+    public func updateLayout(_ grid: ScreenLayoutGrid, broadcast: Bool = true) {
         self.grid = grid
         capture?.layout = grid.layout(for: localDeviceID)
+        guard broadcast else { return }
+        for link in allLinks() {
+            try? link.send(.layout, json: grid)
+        }
     }
 
     /// Peers seen on the network, so links can be opened to the ones we know.
@@ -245,6 +255,9 @@ public final class SessionController: @unchecked Sendable {
                 try? link.send(.hello, json: Hello(deviceID: UUID(),
                                                    deviceName: self.deviceName,
                                                    role: .primary))
+                // Offer ours; whichever copy is newer wins, so a Mac that has been
+                // away comes back into step without anyone rearranging anything.
+                try? link.send(.layout, json: self.grid)
                 self.onEvent?(.peerConnected(name: name))
             case .failed(let reason):
                 self.drop(link, id: peerID, reason: reason)
@@ -344,6 +357,16 @@ public final class SessionController: @unchecked Sendable {
         case .input:
             guard let event = InputEvent.decode(payload) else { return }
             injection.inject(event)
+
+        case .layout:
+            guard let incoming = try? JSONDecoder().decode(ScreenLayoutGrid.self, from: payload),
+                  self.grid.isSuperseded(by: incoming) else { return }
+            self.grid = incoming
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.capture?.layout = incoming.layout(for: self.localDeviceID)
+            }
+            onEvent?(.layoutChanged(incoming))
 
         case .clipboard:
             receiveClipboard(payload)

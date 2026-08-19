@@ -319,6 +319,11 @@ final class AppModel {
         LayoutStore.save(grid)
     }
 
+    func saveLayout() {
+        LayoutStore.save(grid)
+        session?.updateLayout(grid)
+    }
+
     /// Discovery is the freshest source of names, so reconcile against it whenever the
     /// peer list changes. Without this a Mac stored under a placeholder keeps that
     /// placeholder even though its real name is being advertised.
@@ -338,13 +343,11 @@ final class AppModel {
             ?? "Unknown Mac"
         grid.place(id, name: name, at: position)
         LayoutStore.save(grid)
-        // The capture layer decides edges from this, so it must see the change now.
+        // The capture layer decides edges from this, so it must see the change now,
+        // and the other Macs share this arrangement so they need it too.
         session?.updateLayout(grid)
     }
 
-    func saveLayout() {
-        LayoutStore.save(grid)
-    }
 
     /// Which edge of this Mac leads to `peer`, from the arrangement. Nil when the two
     /// are not placed side by side, which is the honest answer: there is no route.
@@ -424,6 +427,10 @@ final class AppModel {
             statusMessage = "Paired with \(name)"
         case .peerRenamed(let peer, let name):
             renamePlacement(peer, to: name)
+        case .layoutChanged(let incoming):
+            // Already applied to the capture layer by the session; store and show it.
+            grid = incoming
+            LayoutStore.save(incoming)
         case .peerConnected(let name):
             awaitingApproval = nil
             codePanel.hide()
@@ -457,6 +464,7 @@ final class AppModel {
         case .paired(let n):                return "paired with \(n)"
         case .peerConnected(let n):         return "connected to \(n)"
         case .peerRenamed(_, let n):        return "peer is named \(n)"
+        case .layoutChanged:                return "arrangement updated by another Mac"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
         case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"

@@ -134,3 +134,58 @@ final class ScreenLayoutGridTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(ScreenLayoutGrid.self, from: data), g)
     }
 }
+
+final class LayoutSharingTests: XCTestCase {
+
+    private let a: DeviceID = "aa00"
+    private let b: DeviceID = "bb11"
+
+    /// An arrangement describes the same fact on every Mac, so the most recently
+    /// edited copy should win rather than each Mac keeping its own view.
+    func testNewerArrangementSupersedesOlder() {
+        var old = ScreenLayoutGrid()
+        old.place(a, name: "A", at: GridPosition(column: 0, row: 0))
+
+        var new = ScreenLayoutGrid()
+        new.place(a, name: "A", at: GridPosition(column: 0, row: 0))
+        new.place(b, name: "B", at: GridPosition(column: 1, row: 0))
+
+        XCTAssertTrue(old.isSuperseded(by: new))
+        XCTAssertFalse(new.isSuperseded(by: old))
+    }
+
+    /// An unedited arrangement must never win over an edited one, or a Mac that has
+    /// never been arranged would wipe out everyone else's layout on connect.
+    func testUntouchedArrangementNeverSupersedes() {
+        var edited = ScreenLayoutGrid()
+        edited.place(a, name: "A", at: GridPosition(column: 0, row: 0))
+        XCTAssertFalse(edited.isSuperseded(by: ScreenLayoutGrid()))
+    }
+
+    func testEditingUpdatesTheTimestamp() {
+        var grid = ScreenLayoutGrid()
+        grid.place(a, name: "A", at: GridPosition(column: 0, row: 0))
+        let first = grid.updatedAt
+        grid.place(b, name: "B", at: GridPosition(column: 1, row: 0))
+        XCTAssertGreaterThan(grid.updatedAt, first)
+    }
+
+    func testRemovalCountsAsAnEdit() {
+        var grid = ScreenLayoutGrid()
+        grid.place(a, name: "A", at: GridPosition(column: 0, row: 0))
+        let before = grid.updatedAt
+        grid.remove(a)
+        XCTAssertGreaterThan(grid.updatedAt, before)
+    }
+
+    /// The arrangement travels verbatim, so it must survive the wire unchanged.
+    func testSurvivesEncodingForTransport() throws {
+        var grid = ScreenLayoutGrid()
+        grid.place(a, name: "A", at: GridPosition(column: 0, row: 0))
+        grid.place(b, name: "B", at: GridPosition(column: 0, row: 1))
+        let decoded = try JSONDecoder().decode(ScreenLayoutGrid.self,
+                                               from: JSONEncoder().encode(grid))
+        XCTAssertEqual(decoded, grid)
+        XCTAssertEqual(decoded.layout(for: a).peer(at: .bottom), b)
+    }
+}

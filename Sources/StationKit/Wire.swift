@@ -23,6 +23,9 @@ public enum MessageType: UInt8, Sendable {
     /// One chunk of a clipboard transfer. Clipboard payloads routinely exceed a single
     /// frame, so they are always chunked rather than special-cased by size.
     case clipboard   = 0x20
+    /// The shared screen arrangement. One arrangement describes every Mac, so editing
+    /// it anywhere should be reflected everywhere.
+    case layout      = 0x21
 
     // Handshake. These are the only frames sent outside the encrypted channel;
     // everything else is wrapped in `.encrypted`.
