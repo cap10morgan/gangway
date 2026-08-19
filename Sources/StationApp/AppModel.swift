@@ -12,7 +12,22 @@ final class AppModel {
 
     /// No controller/controlled split: Station is either part of the mesh or not.
     /// Which Mac is forwarding follows the pointer, and changes as it moves.
-    var isRunning = false
+    private(set) var isRunning = false
+
+    /// Whether the user wants Station active. Station runs by default and starts
+    /// itself: there is nothing for the user to configure before it is useful, so a
+    /// Start button was just a step between launching the app and it working. Turning
+    /// it off is remembered, so an explicit choice is not undone on the next launch.
+    private static let enabledKey = "com.station.enabled"
+    var isEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.enabledKey)
+            newValue ? start() : stop()
+        }
+    }
     var permissions = Permissions.current()
     var peers: [DiscoveredPeer] = []
     /// The arrangement of Macs. Edges are derived from it rather than chosen directly,
@@ -68,6 +83,9 @@ final class AppModel {
         LayoutStore.ensureLocal(localDeviceID, name: deviceName, in: &grid)
         registerWithTCCIfNeeded()
         startPermissionPolling()
+        // Start as soon as we can. Permissions may not be granted yet on a first run,
+        // in which case the poller starts us the moment they are.
+        startIfPossible()
         // Browse continuously. Starting on menu open meant discovery had only a moment
         // to find and resolve peers before the user gave up looking at an empty list.
         browser.start()
@@ -119,7 +137,12 @@ final class AppModel {
             Task { @MainActor in
                 guard let self else { return }
                 let latest = Permissions.current()
-                if latest != self.permissions { self.permissions = latest }
+                if latest != self.permissions {
+                    self.permissions = latest
+                    // Granting the last permission should just make Station work,
+                    // rather than leaving it idle behind a button.
+                    self.startIfPossible()
+                }
                 // Login item state changes in System Settings, with no notification.
                 let login = LoginItem.state
                 if login != self.loginItemState { self.loginItemState = login }
@@ -163,11 +186,18 @@ final class AppModel {
 
     // MARK: - Lifecycle
 
+    /// Start if the user has not turned Station off and the permissions allow it.
+    func startIfPossible() {
+        guard !isRunning, isEnabled, permissions.allGranted else { return }
+        start()
+    }
+
     func start() {
         guard permissions.allGranted else {
             lastError = "Grant Accessibility and Input Monitoring first."
             return
         }
+        guard !isRunning else { return }
         let session = makeSession()
         self.session = session
         isRunning = true

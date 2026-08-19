@@ -79,11 +79,13 @@ struct MenuContent: View {
 
     private var footer: some View {
         HStack {
-            if model.isRunning {
-                Button("Stop") { model.stop() }
-            } else {
-                Button("Start") { model.start() }
-            }
+            // Not a Start button: Station runs on its own. This is only for switching
+            // it off deliberately.
+            Toggle("Active", isOn: Binding(get: { model.isEnabled },
+                                           set: { model.isEnabled = $0 }))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .font(.caption)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
@@ -180,8 +182,11 @@ struct MeshSection: View {
                 }
             }
 
-            if !model.isRunning {
-                Text("Station is not running.")
+            if !model.isEnabled {
+                Text("Station is switched off.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !model.isRunning {
+                Text("Starting…")
                     .font(.caption).foregroundStyle(.secondary)
             } else if model.peers.isEmpty {
                 Text("Looking for other Macs running Station…")
