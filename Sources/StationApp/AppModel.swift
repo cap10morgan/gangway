@@ -47,9 +47,6 @@ final class AppModel {
     private static let clipboardKey = "com.station.clipboardSync"
     var lastClipboardActivity: String?
     var loginItemState: LoginItem.State = .disabled
-    /// Universal Control claims screen edges before Station can, so warn rather than
-    /// letting the pointer vanish to an iPad with no explanation.
-    var universalControlConflict = false
     /// The edge the current session actually uses, for status text.
     private(set) var lastUsedEdge: ScreenEdge = .right
 
@@ -73,7 +70,6 @@ final class AppModel {
     private let codePanel = PairingCodePanel()
     private let browser = PeerBrowser()
     private let deviceName = Host.current().localizedName ?? "Mac"
-    private let deviceID = AppModel.persistentDeviceID()
 
     private var permissionTimer: Timer?
 
@@ -98,7 +94,6 @@ final class AppModel {
         localDeviceID = SessionController.hex(
             ((try? PairingStore.loadOrCreateIdentity()) ?? .generate()).publicKeyData)
         loginItemState = LoginItem.state
-        universalControlConflict = SystemConflicts.universalControlEdgesEnabled
         grid = LayoutStore.load()
         LayoutStore.ensureLocal(localDeviceID, name: deviceName, in: &grid)
         registerWithTCCIfNeeded()
@@ -150,39 +145,49 @@ final class AppModel {
         }
     }
 
-    /// Grants are made in System Settings, in another process, with no notification
-    /// back to us. Poll so the UI updates on its own instead of needing "Check again".
+    /// Poll for changes made in System Settings, which arrive with no notification.
+    ///
+    /// The queries run on a background queue and only the results touch the main actor.
+    /// They are not cheap — TCC preflights, an SMAppService lookup and a preferences
+    /// read that hits disk — and the event tap runs on the main run loop, so doing them
+    /// there stalled forwarded input every time the timer fired. That showed up as the
+    /// pointer and keystrokes going janky.
     private func startPermissionPolling() {
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                let latest = Permissions.current()
-                if latest != self.permissions {
-                    self.permissions = latest
-                    // Granting the last permission should just make Station work,
-                    // rather than leaving it idle behind a button.
-                    self.startIfPossible()
-                }
-                // Login item state changes in System Settings, with no notification.
-                let login = LoginItem.state
-                if login != self.loginItemState { self.loginItemState = login }
-                let conflict = SystemConflicts.universalControlEdgesEnabled
-                if conflict != self.universalControlConflict {
-                    self.universalControlConflict = conflict
-                }
+                // Never poll while input is being forwarded. Nothing here changes
+                // during a control session, and latency matters more than freshness.
+                guard !self.controlIsRemote else { return }
+                let snapshot = await Self.readSystemState()
+                self.applySystemState(snapshot)
             }
         }
     }
 
-    /// A stable identity across launches, so re-pairing is not required every restart.
-    private static func persistentDeviceID() -> UUID {
-        let key = "com.station.deviceID"
-        if let existing = UserDefaults.standard.string(forKey: key), let id = UUID(uuidString: existing) {
-            return id
+    private struct SystemState: Equatable {
+        var permissions: Permissions
+        var loginItem: LoginItem.State
+    }
+
+    private static func readSystemState() async -> SystemState {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: SystemState(
+                    permissions: Permissions.current(),
+                    loginItem: LoginItem.state))
+            }
         }
-        let id = UUID()
-        UserDefaults.standard.set(id.uuidString, forKey: key)
-        return id
+    }
+
+    private func applySystemState(_ state: SystemState) {
+        if state.permissions != permissions {
+            permissions = state.permissions
+            // Granting the last permission should just make Station work, rather than
+            // leaving it idle behind a button.
+            startIfPossible()
+        }
+        if state.loginItem != loginItemState { loginItemState = state.loginItem }
     }
 
     func refreshPermissions() {
@@ -202,15 +207,10 @@ final class AppModel {
         }
         // Read back rather than assuming: macOS may leave it requiring approval.
         loginItemState = LoginItem.state
-        universalControlConflict = SystemConflicts.universalControlEdgesEnabled
     }
 
     func openLoginItemsSettings() {
         LoginItem.openLoginItemsSettings()
-    }
-
-    func openDisplaysSettings() {
-        SystemConflicts.openDisplaysSettings()
     }
 
     // MARK: - Lifecycle

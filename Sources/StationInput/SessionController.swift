@@ -67,6 +67,9 @@ public final class SessionController: @unchecked Sendable {
     /// A crossing held back while a peer is asked for approval, so the push that
     /// started it can be honoured once the answer comes.
     private var heldCrossing: (peer: DeviceID, entry: NormalizedPoint)?
+    /// The link input is currently being forwarded over, held directly so the hot path
+    /// does not take a lock and search a dictionary for every mouse move.
+    nonisolated(unsafe) private var activeLink: StationLink?
 
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
@@ -277,6 +280,7 @@ public final class SessionController: @unchecked Sendable {
         lock.lock()
         pending.removeValue(forKey: ObjectIdentifier(link))
         if let id {
+            if links[id] === activeLink { activeLink = nil }
             links.removeValue(forKey: id)
             ready.remove(id)
             if heldCrossing?.peer == id { heldCrossing = nil }
@@ -390,23 +394,27 @@ public final class SessionController: @unchecked Sendable {
         capture.onPeerNotReady = { [weak self] peer, entry in
             self?.requestControl(of: peer, entry: entry)
         }
+        // The hot path: one send, no lock, no lookup.
         capture.onEvent = { [weak self] event in
-            guard let self, case .forwarding(let peer) = capture.mode else { return }
-            self.link(for: peer)?.send(.input, event.encode())
+            self?.activeLink?.send(.input, event.encode())
         }
         capture.onEnterPeer = { [weak self] peer, at in
             guard let self else { return }
-            self.link(for: peer)?.send(.enterScreen,
-                                       EnterScreen(normalizedX: at.x, normalizedY: at.y).encode())
+            let link = self.link(for: peer)
+            self.activeLink = link
+            link?.send(.enterScreen,
+                       EnterScreen(normalizedX: at.x, normalizedY: at.y).encode())
             self.onEvent?(.controlMoved(remote: true, peer: self.names[peer]))
         }
         capture.onReturnLocal = { [weak self] _, _ in
             guard let self else { return }
+            self.activeLink = nil
             self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
             self.onEvent?(.controlMoved(remote: false, peer: nil))
         }
         capture.onEscapeHatch = { [weak self] in
             guard let self else { return }
+            self.activeLink = nil
             self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
             self.onEvent?(.controlMoved(remote: false, peer: nil))
         }
