@@ -213,6 +213,16 @@ final class AppModel {
         LoginItem.openLoginItemsSettings()
     }
 
+    /// Only ever "possible", never "happening": which edge a Universal Control device
+    /// occupies is not discoverable, so this is shown as advice where edges are chosen.
+    var universalControlEdgesEnabled: Bool {
+        SystemConflicts.universalControlEdgesEnabled
+    }
+
+    func openDisplaysSettings() {
+        SystemConflicts.openDisplaysSettings()
+    }
+
     // MARK: - Lifecycle
 
     /// Start if the user has not turned Station off and the permissions allow it.

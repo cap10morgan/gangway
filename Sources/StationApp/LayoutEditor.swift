@@ -28,6 +28,7 @@ struct LayoutEditorView: View {
                 unplacedTray
             }
 
+            universalControlNote
             footer
         }
         .padding(16)
@@ -105,6 +106,25 @@ struct LayoutEditorView: View {
                         .draggable(peer.id)
                 }
             }
+        }
+    }
+
+    /// Advice, not an alarm. Universal Control only takes an edge when one of its
+    /// devices happens to occupy that edge, and which edge that is cannot be read from
+    /// the system, so this says what to watch for at the moment edges are being chosen.
+    @ViewBuilder
+    private var universalControlNote: some View {
+        if model.universalControlEdgesEnabled {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "info.circle")
+                Text("If an iPad or another Mac sits at one of these edges, Universal "
+                     + "Control will take the pointer there first.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Displays…") { model.openDisplaysSettings() }
+                    .controlSize(.small)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
     }
 
