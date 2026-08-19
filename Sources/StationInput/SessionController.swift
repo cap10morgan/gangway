@@ -183,6 +183,18 @@ public final class SessionController: @unchecked Sendable {
 
         nonisolated(unsafe) var peerID: DeviceID?
 
+        link.onPeerApproved = { [weak self] in
+            guard let self else { return }
+            link.confirmPairing()
+            let id = peerID ?? ""
+            let name = self.names[id] ?? expectedName ?? "another Mac"
+            if let key = Data(hexString: id), !id.isEmpty,
+               PairingStore.peers().first(where: { $0.id == id }) == nil {
+                PairingStore.upsert(PairingStore.Peer(publicKey: key, name: name, edge: .right))
+            }
+            self.onEvent?(.paired(name: name))
+        }
+
         link.onPeerIdentity = { [weak self] key, known in
             guard let self else { return }
             let id = Self.hex(key)
@@ -202,9 +214,10 @@ public final class SessionController: @unchecked Sendable {
                 let id = peerID ?? ""
                 let name = self.names[id] ?? expectedName ?? "another Mac"
                 if link.isInitiator {
-                    // We asked to join, so approval happens on the other Mac. Confirm
-                    // our side immediately and show the code for comparison.
-                    link.confirmPairing()
+                    // We asked to join, so a person approves on the other Mac. Do NOT
+                    // open the channel yet: confirming here is what allows incoming
+                    // input, and doing it up front would let whoever answered control
+                    // this Mac before anyone approved anything. Wait for word back.
                     self.onEvent?(.awaitingApproval(name: name, code: code))
                 } else {
                     self.onEvent?(.approvalRequested(peer: id, name: name, code: code))
@@ -246,6 +259,8 @@ public final class SessionController: @unchecked Sendable {
         lock.unlock()
         guard let link else { return }
         link.confirmPairing()
+        // Tell the other Mac it may open its side too.
+        link.announceApproval()
 
         let name = names[peer] ?? "Mac"
         if PairingStore.peers().first(where: { $0.id == peer }) == nil,

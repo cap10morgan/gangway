@@ -170,11 +170,13 @@ struct MeshSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Waiting for approval on \(waiting.name)")
                         .font(.callout)
-                    Text("That Mac should show this code:")
+                    Text("Approve on \(waiting.name) only if it shows this code:")
                         .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(waiting.code)
-                        .font(.system(size: 22, weight: .semibold, design: .monospaced))
-                        .kerning(4)
+                        .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                        .kerning(5)
+                        .frame(maxWidth: .infinity)
                 }
             }
 

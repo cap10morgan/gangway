@@ -29,6 +29,10 @@ public enum MessageType: UInt8, Sendable {
     case hsEphemeral = 0x60
     case hsIdentity  = 0x61
     case encrypted   = 0x62
+    /// Sent by the Mac that was asked, once a person there has authorised the pairing.
+    /// Processed even while the receiver has not itself confirmed, since it is what
+    /// tells the initiating Mac the pairing was accepted.
+    case pairingApproved = 0x63
 }
 
 public let stationProtocolVersion = 1

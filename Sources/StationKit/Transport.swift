@@ -113,6 +113,8 @@ public final class StationLink: @unchecked Sendable {
     public var onError: (@Sendable (Error) -> Void)?
     /// Peer's long-term public key and whether it matched a pinned one.
     public var onPeerIdentity: (@Sendable (Data, Bool) -> Void)?
+    /// A person on the other Mac authorised this pairing.
+    public var onPeerApproved: (@Sendable () -> Void)?
 
     public var endpointDescription: String { String(describing: connection.endpoint) }
 
@@ -226,7 +228,14 @@ public final class StationLink: @unchecked Sendable {
         connection.cancel()
     }
 
-    /// Call once the user has confirmed the SAS matches on both Macs.
+    /// Tell the peer a person here authorised the pairing. Sent after confirming, so
+    /// it travels on the now-open channel.
+    public func announceApproval() {
+        send(.pairingApproved, Data())
+    }
+
+    /// Open the channel. On the Mac that was asked this follows authentication; on the
+    /// Mac that asked it follows word that the other side approved.
     public func confirmPairing() {
         lock.lock()
         confirmed = true
@@ -386,6 +395,14 @@ public final class StationLink: @unchecked Sendable {
                     if room > 0 { pendingInbound.append(contentsOf: frames.prefix(room)) }
                 }
                 lock.unlock()
+
+                // One exception to the gate: the peer telling us a person there
+                // authorised the pairing. Everything else stays held, so an unapproved
+                // peer still cannot deliver input.
+                if !mayDeliver, frames.contains(where: { $0.0 == .pairingApproved }) {
+                    onPeerApproved?()
+                    return
+                }
                 guard mayDeliver else { return }
 
                 for (type, payload) in frames { onMessage?(type, payload) }

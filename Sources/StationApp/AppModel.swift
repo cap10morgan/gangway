@@ -192,8 +192,15 @@ final class AppModel {
 
     func approvePending() async {
         guard let pending = pendingApproval else { return }
+        // The code must be in the authentication reason itself. It is the only thing
+        // that distinguishes the real Mac from something interposed, and a prompt that
+        // merely says "allow X" invites approving without looking.
         let result = await Authorization.confirm(
-            reason: "allow \(pending.name) to control this Mac")
+            reason: """
+                allow \(pending.name) to control this Mac.
+
+                Approve only if \(pending.name) is showing this same code:  \(pending.code)
+                """)
         switch result {
         case .authorized:
             session?.approve(peer: pending.peer)
