@@ -18,14 +18,15 @@ final class AppModel {
     /// itself: there is nothing for the user to configure before it is useful, so a
     /// Start button was just a step between launching the app and it working. Turning
     /// it off is remembered, so an explicit choice is not undone on the next launch.
+    /// Stored rather than computed straight from UserDefaults: `@Observable` tracks
+    /// stored properties, so a computed one backed by defaults would not reliably
+    /// refresh the view that toggles it.
     private static let enabledKey = "com.station.enabled"
-    var isEnabled: Bool {
-        get {
-            UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: Self.enabledKey)
-            newValue ? start() : stop()
+    var isEnabled: Bool = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
+            isEnabled ? start() : stop()
         }
     }
     var permissions = Permissions.current()
@@ -35,10 +36,15 @@ final class AppModel {
     var grid = ScreenLayoutGrid()
     var localDeviceID: DeviceID = ""
     /// Off unless the user asks for it: sharing a clipboard between machines is a
-    /// privacy decision, not a sensible default.
+    /// privacy decision, not a sensible default. Remembered once chosen, either way.
     var clipboardSyncEnabled = false {
-        didSet { session?.clipboardSyncEnabled = clipboardSyncEnabled }
+        didSet {
+            guard clipboardSyncEnabled != oldValue else { return }
+            UserDefaults.standard.set(clipboardSyncEnabled, forKey: Self.clipboardKey)
+            session?.clipboardSyncEnabled = clipboardSyncEnabled
+        }
     }
+    private static let clipboardKey = "com.station.clipboardSync"
     var lastClipboardActivity: String?
     var loginItemState: LoginItem.State = .disabled
     /// The edge the current session actually uses, for status text.
@@ -83,6 +89,9 @@ final class AppModel {
                 self.reconcilePlacementNames()
             }
         }
+        // didSet does not run during init, so restore both directly.
+        isEnabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        clipboardSyncEnabled = UserDefaults.standard.bool(forKey: Self.clipboardKey)
         localDeviceID = SessionController.hex(
             ((try? PairingStore.loadOrCreateIdentity()) ?? .generate()).publicKeyData)
         loginItemState = LoginItem.state
