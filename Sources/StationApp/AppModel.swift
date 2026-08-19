@@ -420,9 +420,13 @@ final class AppModel {
         }
     }
 
-    /// Icon reflects whether input is currently leaving this Mac.
+    /// Reflects only whether Station is active, deliberately not where the pointer is.
+    ///
+    /// An icon that changed as control moved was flickering during ordinary use, and
+    /// nobody is looking at this Mac's menu bar at the moment the pointer leaves it.
+    /// Where control currently sits is shown inside the popover instead, where it is
+    /// only read when someone goes looking for it.
     var menuBarSymbol: String {
-        guard isRunning else { return "rectangle.on.rectangle.slash" }
-        return controlIsRemote ? "arrow.right.to.line" : "rectangle.on.rectangle"
+        isRunning ? "rectangle.on.rectangle" : "rectangle.on.rectangle.slash"
     }
 }
