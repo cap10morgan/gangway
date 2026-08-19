@@ -477,10 +477,11 @@ public final class StationListener: @unchecked Sendable {
         if advertise {
             var txt = NWTXTRecord()
             txt["v"] = String(stationProtocolVersion)
-            // The identity fingerprint lets a primary tell a re-paired Mac from a new
-            // one before connecting. It is a public key hash, not a secret.
-            txt["id"] = identity.publicKeyData.prefix(8)
-                .map { String(format: "%02x", $0) }.joined()
+            // The full public key, not a prefix. A Mac must be placeable in an
+            // arrangement before it has ever been paired, and the arrangement refers to
+            // Macs by identity, so that identity has to be knowable at discovery time.
+            // It is a public key: publishing it reveals nothing.
+            txt["id"] = identity.publicKeyData.map { String(format: "%02x", $0) }.joined()
             listener.service = NWListener.Service(name: deviceName,
                                                  type: stationBonjourType,
                                                  txtRecord: txt.data)
@@ -617,7 +618,7 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         let peer = DiscoveredPeer(name: service.name,
                                   host: host,
                                   port: UInt16(service.port),
-                                  identityFingerprint: string("id"),
+                                  deviceID: string("id"),
                                   protocolVersion: string("v").flatMap(Int.init))
         lock.lock()
         // Prefer the shortest name for a given endpoint: Bonjour's "(2)" suffix marks a
@@ -625,7 +626,7 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         let key = Self.key(host: host, port: peer.port)
         if let existing = found[key], existing.name.count <= peer.name.count {
             found[key] = DiscoveredPeer(name: existing.name, host: peer.host, port: peer.port,
-                                        identityFingerprint: peer.identityFingerprint,
+                                        deviceID: peer.deviceID,
                                         protocolVersion: peer.protocolVersion)
         } else {
             found[key] = peer
@@ -646,10 +647,13 @@ public struct DiscoveredPeer: Sendable, Equatable, Identifiable {
     public let name: String
     public let host: String
     public let port: UInt16
-    /// Short hash of the peer's long-term public key, advertised so a primary can tell
-    /// a re-installed Mac from a new one before connecting. Not a secret.
-    public let identityFingerprint: String?
+    /// The peer's long-term identity, advertised so it can be arranged and recognised
+    /// before ever being paired. A public key; publishing it reveals nothing.
+    public let deviceID: DeviceID?
     public let protocolVersion: Int?
+
+    /// Short form for display.
+    public var shortFingerprint: String { String(deviceID?.prefix(8) ?? "") }
     public var id: String { name }
 
     public var endpoint: NWEndpoint {
@@ -660,14 +664,14 @@ public struct DiscoveredPeer: Sendable, Equatable, Identifiable {
     public var isCompatible: Bool { protocolVersion == stationProtocolVersion }
 
     /// True when we have everything needed to attempt a connection.
-    public var isPairable: Bool { port > 0 }
+    public var isPairable: Bool { port > 0 && deviceID != nil }
 
     public init(name: String, host: String, port: UInt16,
-                identityFingerprint: String?, protocolVersion: Int?) {
+                deviceID: DeviceID?, protocolVersion: Int?) {
         self.name = name
         self.host = host
         self.port = port
-        self.identityFingerprint = identityFingerprint
+        self.deviceID = deviceID
         self.protocolVersion = protocolVersion
     }
 

@@ -58,6 +58,11 @@ public final class SessionController: @unchecked Sendable {
     private var endpoints: [DeviceID: NWEndpoint] = [:]
 
     private var grid = ScreenLayoutGrid()
+    /// Peers whose channel is open, so the pointer may cross to them.
+    private var ready: Set<DeviceID> = []
+    /// A crossing held back while a peer is asked for approval, so the push that
+    /// started it can be honoured once the answer comes.
+    private var heldCrossing: (peer: DeviceID, entry: NormalizedPoint)?
 
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
@@ -122,12 +127,12 @@ public final class SessionController: @unchecked Sendable {
     /// Peers seen on the network, so links can be opened to the ones we know.
     public func updateDiscovered(_ peers: [DiscoveredPeer]) {
         lock.lock()
+        // Every discovered Mac, not only paired ones: the pointer can be pushed at a
+        // Mac that has never been paired, and that is what starts the pairing.
         for peer in peers {
-            guard let fingerprint = peer.identityFingerprint,
-                  let known = PairingStore.peers().first(where: { $0.id.hasPrefix(fingerprint) })
-            else { continue }
-            endpoints[known.id] = peer.endpoint
-            names[known.id] = peer.name
+            guard let id = peer.deviceID else { continue }
+            endpoints[id] = peer.endpoint
+            names[id] = peer.name
         }
         let targets = endpoints.keys.filter { links[$0] == nil && shouldInitiate(to: $0) }
         lock.unlock()
@@ -246,7 +251,11 @@ public final class SessionController: @unchecked Sendable {
     private func drop(_ link: StationLink, id: DeviceID?, reason: String?) {
         lock.lock()
         pending.removeValue(forKey: ObjectIdentifier(link))
-        if let id { links.removeValue(forKey: id) }
+        if let id {
+            links.removeValue(forKey: id)
+            ready.remove(id)
+            if heldCrossing?.peer == id { heldCrossing = nil }
+        }
         let name = id.flatMap { names[$0] } ?? "a Mac"
         lock.unlock()
         onEvent?(.peerDisconnected(name: name, reason: reason))
@@ -292,6 +301,8 @@ public final class SessionController: @unchecked Sendable {
                   let screens = try? JSONDecoder().decode(ScreenSet.self, from: payload) else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.capture?.setPeerBounds(screens.bounds, for: peer)
+                // Only now can the pointer actually land somewhere sensible there.
+                self?.markReady(peer)
             }
 
         case .enterScreen:
@@ -321,6 +332,14 @@ public final class SessionController: @unchecked Sendable {
         let capture = EventCapture(layout: grid.layout(for: localDeviceID))
         self.capture = capture
 
+        capture.isPeerReady = { [weak self] peer in
+            guard let self else { return false }
+            self.lock.lock(); defer { self.lock.unlock() }
+            return self.ready.contains(peer)
+        }
+        capture.onPeerNotReady = { [weak self] peer, entry in
+            self?.requestControl(of: peer, entry: entry)
+        }
         capture.onEvent = { [weak self] event in
             guard let self, case .forwarding(let peer) = capture.mode else { return }
             self.link(for: peer)?.send(.input, event.encode())
@@ -348,6 +367,38 @@ public final class SessionController: @unchecked Sendable {
             } catch {
                 self?.onEvent?(.failed(error.localizedDescription))
             }
+        }
+    }
+
+    /// The pointer was pushed at a peer that is not ready. Connect if needed, which
+    /// puts the approval prompt on that Mac, and remember the crossing so it completes
+    /// on approval rather than needing to be repeated.
+    private func requestControl(of peer: DeviceID, entry: NormalizedPoint) {
+        lock.lock()
+        heldCrossing = (peer, entry)
+        let haveLink = links[peer] != nil
+        let endpoint = endpoints[peer]
+        lock.unlock()
+
+        if haveLink { return }
+        guard endpoint != nil else {
+            onEvent?(.failed("\(names[peer] ?? "That Mac") is not on the network."))
+            return
+        }
+        connect(to: peer)
+    }
+
+    /// A peer became usable: mark it ready and complete any crossing that was waiting.
+    private func markReady(_ peer: DeviceID) {
+        lock.lock()
+        ready.insert(peer)
+        let held = heldCrossing?.peer == peer ? heldCrossing : nil
+        if held != nil { heldCrossing = nil }
+        lock.unlock()
+
+        guard let held else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.capture?.beginForwarding(to: held.peer, entry: held.entry)
         }
     }
 

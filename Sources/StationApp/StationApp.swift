@@ -219,19 +219,15 @@ struct PeerRow: View {
                 .foregroundStyle(model.isPaired(peer) ? Color.green : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(peer.name).font(.callout)
-                if let reason = model.unusableReason(for: peer) {
-                    Text(reason).font(.caption2).foregroundStyle(.secondary)
-                } else if model.connectedPeer == peer.name {
+                if model.connectedPeer == peer.name {
                     Text("Connected").font(.caption2).foregroundStyle(.green)
-                } else if model.isPaired(peer) {
-                    Text("Paired").font(.caption2).foregroundStyle(.secondary)
+                } else if let step = model.nextStep(for: peer) {
+                    Text(step).font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Ready").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            if model.unusableReason(for: peer) == nil && !model.isPaired(peer) {
-                Button("Pair") { model.pair(with: peer) }
-                    .controlSize(.small)
-            }
         }
     }
 }

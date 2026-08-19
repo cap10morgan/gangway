@@ -37,6 +37,17 @@ public final class EventCapture: @unchecked Sendable {
     /// Control came back to this Mac.
     public var onReturnLocal: (@Sendable (ScreenEdge, NormalizedPoint) -> Void)?
     public var onTapDisabled: (@Sendable () -> Void)?
+    /// Whether control may pass to this peer yet. A peer that has never been paired is
+    /// not ready until somebody there has approved.
+    public var isPeerReady: (@Sendable (DeviceID) -> Bool)?
+    /// The pointer reached an edge leading to a peer that is not ready. Control stays
+    /// here; this is the cue to connect and ask for approval.
+    public var onPeerNotReady: (@Sendable (DeviceID, NormalizedPoint) -> Void)?
+
+    /// Last time we reported a not-ready peer, so pushing at an edge does not ask
+    /// repeatedly. Pointer motion produces events far faster than a person can approve.
+    private var lastNotReadyReport: [DeviceID: Date] = [:]
+    private static let notReadyReportInterval: TimeInterval = 3
 
     public var layout: Layout
     private var localBounds: Rect
@@ -164,6 +175,21 @@ public final class EventCapture: @unchecked Sendable {
         }
     }
 
+    /// Hand the pointer to a peer directly, once it has become ready.
+    ///
+    /// Used to complete a crossing that was blocked while waiting for approval, so the
+    /// push that started it is honoured rather than needing to be repeated.
+    public func beginForwarding(to peer: DeviceID, entry: NormalizedPoint) {
+        guard mode == .local, let bounds = peerBounds[peer] else { return }
+        guard let edge = layout.edge(of: peer) else { return }
+        parkedCursor = ScreenGeometry.currentCursor
+        remoteCursor = RemoteCursor(entry: entry, peerBounds: bounds,
+                                    returnEdge: edge.opposite)
+        mode = .forwarding(peer: peer)
+        captureCursor()
+        onEnterPeer?(peer, entry)
+    }
+
     /// Control-Option-Escape.
     static func isEscapeHatch(type: CGEventType, event: CGEvent) -> Bool {
         guard type == .keyDown else { return false }
@@ -180,7 +206,19 @@ public final class EventCapture: @unchecked Sendable {
         guard let crossing = detector.crossing(cursor: event.location, delta: delta) else {
             return
         }
-        guard let bounds = peerBounds[crossing.peer] else { return }
+        // A peer that has not approved yet, or whose geometry we have not learned,
+        // cannot receive the pointer. Hold control here and say so, rather than
+        // handing the pointer to a Mac that will drop it.
+        guard let bounds = peerBounds[crossing.peer],
+              isPeerReady?(crossing.peer) ?? true else {
+            let now = Date()
+            let last = lastNotReadyReport[crossing.peer] ?? .distantPast
+            if now.timeIntervalSince(last) > Self.notReadyReportInterval {
+                lastNotReadyReport[crossing.peer] = now
+                onPeerNotReady?(crossing.peer, crossing.entry)
+            }
+            return
+        }
 
         parkedCursor = event.location
         // Leaving this Mac by its right edge means arriving on the peer's left, so the

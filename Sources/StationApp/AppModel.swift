@@ -176,20 +176,6 @@ final class AppModel {
         session.start(grid: grid)
     }
 
-    /// Ask a Mac we have not paired with to let us join.
-    func pair(with peer: DiscoveredPeer) {
-        guard let id = peerIdentityOrFingerprint(for: peer) else {
-            lastError = "\(peer.name) is not advertising an identity yet."
-            return
-        }
-        session?.connectByFingerprint(id, endpoint: peer.endpoint, name: peer.name)
-        statusMessage = "Asking \(peer.name) to allow this Mac…"
-    }
-
-    private func peerIdentityOrFingerprint(for peer: DiscoveredPeer) -> String? {
-        peer.identityFingerprint
-    }
-
     func approvePending() async {
         guard let pending = pendingApproval else { return }
         // The code must be in the authentication reason itself. It is the only thing
@@ -237,19 +223,35 @@ final class AppModel {
 
     /// Paired Macs that have no place in the arrangement yet.
     var unplacedPeers: [ScreenLayoutGrid.Placement] {
-        PairingStore.peers()
-            .filter { grid.placement(of: $0.id) == nil }
-            .map { ScreenLayoutGrid.Placement(id: $0.id,
-                                              position: GridPosition(column: 0, row: 0),
-                                              name: $0.name) }
+        // Discovered Macs, not only paired ones: a Mac must be placed before the
+        // pointer can be pushed at it, and that push is what starts the pairing.
+        var seen = Set<DeviceID>()
+        var out: [ScreenLayoutGrid.Placement] = []
+        for peer in peers {
+            guard let id = peer.deviceID, peer.isCompatible,
+                  grid.placement(of: id) == nil, seen.insert(id).inserted else { continue }
+            out.append(ScreenLayoutGrid.Placement(id: id,
+                                                  position: GridPosition(column: 0, row: 0),
+                                                  name: peer.name))
+        }
+        for stored in PairingStore.peers()
+        where grid.placement(of: stored.id) == nil && seen.insert(stored.id).inserted {
+            out.append(ScreenLayoutGrid.Placement(id: stored.id,
+                                                  position: GridPosition(column: 0, row: 0),
+                                                  name: stored.name))
+        }
+        return out
     }
 
     func moveMac(_ id: DeviceID, to position: GridPosition) {
         let name = grid.placement(of: id)?.name
+            ?? peers.first { $0.deviceID == id }?.name
             ?? PairingStore.peers().first { $0.id == id }?.name
             ?? "Mac"
         grid.place(id, name: name, at: position)
         LayoutStore.save(grid)
+        // The capture layer decides edges from this, so it must see the change now.
+        session?.updateLayout(grid)
     }
 
     func saveLayout() {
@@ -263,26 +265,31 @@ final class AppModel {
         return grid.edge(from: localDeviceID, to: id)
     }
 
-    private func peerIdentity(for peer: DiscoveredPeer) -> DeviceID? {
-        // Prefer the advertised identity fingerprint; fall back to matching by name for
-        // a peer that has been paired but is advertising an older record.
-        if let fingerprint = peer.identityFingerprint,
-           let match = PairingStore.peers().first(where: { $0.id.hasPrefix(fingerprint) }) {
-            return match.id
-        }
-        return PairingStore.peers().first { $0.name == peer.name }?.id
-    }
+    private func peerIdentity(for peer: DiscoveredPeer) -> DeviceID? { peer.deviceID }
 
     func isPaired(_ peer: DiscoveredPeer) -> Bool {
-        guard let fingerprint = peer.identityFingerprint else { return false }
-        return PairingStore.peers().contains { $0.id.hasPrefix(fingerprint) }
+        guard let id = peer.deviceID else { return false }
+        return PairingStore.peers().contains { $0.id == id }
+    }
+
+    func isPlaced(_ peer: DiscoveredPeer) -> Bool {
+        guard let id = peer.deviceID else { return false }
+        return grid.placement(of: id) != nil
+    }
+
+    /// What the user needs to do next with this Mac, or nil when it is ready to use.
+    func nextStep(for peer: DiscoveredPeer) -> String? {
+        if let reason = unusableReason(for: peer) { return reason }
+        if !isPlaced(peer) { return "Add it in Arrange screens…" }
+        if !isPaired(peer) { return "Move the pointer to it to connect" }
+        return nil
     }
 
     /// Why a discovered peer cannot be used, or nil if it is usable.
     func unusableReason(for peer: DiscoveredPeer) -> String? {
         if !peer.isCompatible {
             return peer.protocolVersion == nil
-                ? "Could not read pairing details"
+                ? "Could not read its details"
                 : "Different Station version"
         }
         if !peer.isPairable { return "Not ready to pair" }

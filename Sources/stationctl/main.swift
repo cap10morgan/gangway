@@ -77,7 +77,7 @@ case "run":
     browser.onPeersChanged = { peers in
         session.updateDiscovered(peers)
         for p in peers {
-            log("discover", "\(p.name) at \(p.host):\(p.port) id=\(p.identityFingerprint ?? "?")")
+            log("discover", "\(p.name) at \(p.host):\(p.port) id=\(p.shortFingerprint)")
         }
     }
 
@@ -290,7 +290,7 @@ case "discover":
         if peers.isEmpty { log("discover", "no peers"); return }
         for p in peers {
             log("discover", "\(p.name) at \(p.host):\(p.port) "
-                          + "id=\(p.identityFingerprint ?? "MISSING") "
+                          + "id=\(p.shortFingerprint.isEmpty ? "MISSING" : p.shortFingerprint) "
                           + "v=\(p.protocolVersion.map(String.init) ?? "MISSING") "
                           + "compatible=\(p.isCompatible)")
         }
