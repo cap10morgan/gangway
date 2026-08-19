@@ -80,6 +80,7 @@ final class AppModel {
                 let others = peers.filter { $0.deviceID != self.localDeviceID }
                 self.peers = others
                 self.session?.updateDiscovered(others)
+                self.reconcilePlacementNames()
             }
         }
         localDeviceID = SessionController.hex(
@@ -289,11 +290,30 @@ final class AppModel {
         return out
     }
 
+    /// Keep the arrangement showing a Mac's real name.
+    func renamePlacement(_ id: DeviceID, to name: String) {
+        guard !name.isEmpty, grid.placement(of: id)?.name != name else { return }
+        grid.rename(id, to: name)
+        LayoutStore.save(grid)
+    }
+
+    /// Discovery is the freshest source of names, so reconcile against it whenever the
+    /// peer list changes. Without this a Mac stored under a placeholder keeps that
+    /// placeholder even though its real name is being advertised.
+    private func reconcilePlacementNames() {
+        for peer in peers {
+            guard let id = peer.deviceID else { continue }
+            renamePlacement(id, to: peer.name)
+        }
+    }
+
     func moveMac(_ id: DeviceID, to position: GridPosition) {
-        let name = grid.placement(of: id)?.name
-            ?? peers.first { $0.deviceID == id }?.name
+        // Discovery first: it is the live name, where the other two may hold a
+        // placeholder written before the name was known.
+        let name = peers.first { $0.deviceID == id }?.name
+            ?? grid.placement(of: id)?.name
             ?? PairingStore.peers().first { $0.id == id }?.name
-            ?? "Mac"
+            ?? "Unknown Mac"
         grid.place(id, name: name, at: position)
         LayoutStore.save(grid)
         // The capture layer decides edges from this, so it must see the change now.
@@ -380,6 +400,8 @@ final class AppModel {
             awaitingApproval = nil
             codePanel.hide()
             statusMessage = "Paired with \(name)"
+        case .peerRenamed(let peer, let name):
+            renamePlacement(peer, to: name)
         case .peerConnected(let name):
             awaitingApproval = nil
             codePanel.hide()
@@ -412,6 +434,7 @@ final class AppModel {
         case .awaitingApproval(let n, _):   return "waiting for approval on \(n)"
         case .paired(let n):                return "paired with \(n)"
         case .peerConnected(let n):         return "connected to \(n)"
+        case .peerRenamed(_, let n):        return "peer is named \(n)"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
         case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"

@@ -26,6 +26,8 @@ public final class SessionController: @unchecked Sendable {
         case awaitingApproval(name: String, code: String)
         case paired(name: String)
         case peerConnected(name: String)
+        /// A peer's real name arrived after it was stored under a placeholder.
+        case peerRenamed(peer: DeviceID, name: String)
         case peerDisconnected(name: String, reason: String?)
         /// Control moved to a peer, or came back here.
         case controlMoved(remote: Bool, peer: String?)
@@ -300,9 +302,24 @@ public final class SessionController: @unchecked Sendable {
     private func handle(type: MessageType, payload: Data, link: StationLink, peer: DeviceID?) {
         switch type {
         case .hello:
-            let name = (try? JSONDecoder().decode(Hello.self, from: payload))?.deviceName ?? "Mac"
+            guard let name = (try? JSONDecoder().decode(Hello.self, from: payload))?.deviceName,
+                  !name.isEmpty else {
+                try? link.send(.screens, json: ScreenGeometry.localScreens())
+                return
+            }
             if let peer {
                 lock.lock(); names[peer] = name; lock.unlock()
+                // A peer may have been stored under a placeholder, because pairing can
+                // complete before its name is known. The name arrives here, so correct
+                // the record rather than leaving "Mac" in the arrangement forever.
+                if let stored = PairingStore.peers().first(where: { $0.id == peer }),
+                   stored.name != name {
+                    PairingStore.upsert(PairingStore.Peer(publicKey: stored.publicKey,
+                                                          name: name,
+                                                          edge: stored.edge,
+                                                          pairedAt: stored.pairedAt))
+                    onEvent?(.peerRenamed(peer: peer, name: name))
+                }
             }
             try? link.send(.screens, json: ScreenGeometry.localScreens())
 

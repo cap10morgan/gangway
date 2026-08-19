@@ -110,6 +110,8 @@ case "run":
             log("station", "paired with \(name)")
         case .peerConnected(let name):
             log("station", "connected to \(name)")
+        case .peerRenamed(_, let name):
+            log("station", "peer is named \(name)")
         case .peerDisconnected(let name, let reason):
             log("station", "\(name) disconnected\(reason.map { ": \($0)" } ?? "")")
         case .controlMoved(let remote, let peer):
