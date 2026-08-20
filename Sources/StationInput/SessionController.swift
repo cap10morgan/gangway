@@ -31,8 +31,9 @@ public final class SessionController: @unchecked Sendable {
         /// A newer arrangement arrived from another Mac.
         case layoutChanged(ScreenLayoutGrid)
         /// Another app has Secure Event Input on, so keystrokes cannot be forwarded.
-        /// Reported when control moves, which is the moment it starts mattering.
         case keyboardBlocked
+        /// Secure Event Input was released and keystrokes forward again.
+        case keyboardUnblocked
         case peerDisconnected(name: String, reason: String?)
         /// Control moved to a peer, or came back here.
         case controlMoved(remote: Bool, peer: String?)
@@ -73,6 +74,11 @@ public final class SessionController: @unchecked Sendable {
     /// The link input is currently being forwarded over, held directly so the hot path
     /// does not take a lock and search a dictionary for every mouse move.
     nonisolated(unsafe) private var activeLink: StationLink?
+    /// Last Secure Event Input reading, and when it was taken. Any application can turn
+    /// it on at any moment, including part way through a session, so checking only when
+    /// control moves would miss exactly the case that is hardest to diagnose.
+    nonisolated(unsafe) private var secureInputBlocked = false
+    nonisolated(unsafe) private var lastSecureInputCheck = Date.distantPast
 
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
@@ -475,16 +481,19 @@ public final class SessionController: @unchecked Sendable {
         // The hot path: one send, no lock, no lookup.
         capture.onEvent = { [weak self] event in
             Self.note(sent: event.eventType, received: nil)
-            self?.activeLink?.send(.input, event.encode())
+            guard let self else { return }
+            // Only on key events, and at most every two seconds: pointer motion far
+            // outnumbers keystrokes, and this must not cost anything on that path.
+            if event.eventType == 10 || event.eventType == 11 {
+                self.checkSecureInput()
+            }
+            self.activeLink?.send(.input, event.encode())
         }
         capture.onEnterPeer = { [weak self] peer, at in
             guard let self else { return }
             // Checked here rather than polled: it is only a problem while forwarding,
             // and this is the moment the user will notice keys going nowhere.
-            if SecureInput.isEnabled {
-                Self.debugLog("secure input is enabled; keystrokes will not forward")
-                self.onEvent?(.keyboardBlocked)
-            }
+            self.checkSecureInput(force: true)
             let link = self.link(for: peer)
             self.activeLink = link
             link?.send(.enterScreen,
@@ -543,6 +552,19 @@ public final class SessionController: @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             self?.capture?.beginForwarding(to: held.peer, entry: held.entry)
         }
+    }
+
+    /// Report Secure Event Input when it changes, in either direction.
+    private func checkSecureInput(force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastSecureInputCheck) > 2 else { return }
+        lastSecureInputCheck = now
+
+        let blocked = SecureInput.isEnabled
+        guard blocked != secureInputBlocked || (force && blocked) else { return }
+        secureInputBlocked = blocked
+        Self.debugLog("secure input \(blocked ? "enabled" : "released")")
+        onEvent?(blocked ? .keyboardBlocked : .keyboardUnblocked)
     }
 
     private func link(for peer: DeviceID) -> StationLink? {

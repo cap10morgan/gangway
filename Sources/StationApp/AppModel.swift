@@ -437,6 +437,12 @@ final class AppModel {
             statusMessage = "Paired with \(name)"
         case .peerRenamed(let peer, let name):
             renamePlacement(peer, to: name)
+        case .keyboardUnblocked:
+            // Clear it rather than leaving a stale complaint about a fixed problem.
+            if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
+        case .keyboardUnblocked:
+            // Clear it rather than leaving a stale complaint about a fixed problem.
+            if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
         case .keyboardBlocked:
             lastError = "Another app has Secure Keyboard Entry turned on, so keystrokes "
                       + "cannot be sent to the other Mac. Terminal's Secure Keyboard "
@@ -480,6 +486,7 @@ final class AppModel {
         case .peerRenamed(_, let n):        return "peer is named \(n)"
         case .layoutChanged:                return "arrangement updated by another Mac"
         case .keyboardBlocked:              return "keyboard blocked by secure input"
+        case .keyboardUnblocked:            return "secure input released"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
         case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"
