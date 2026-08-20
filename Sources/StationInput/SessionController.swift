@@ -81,6 +81,46 @@ public final class SessionController: @unchecked Sendable {
         self.localDeviceID = Self.hex(self.identity.publicKeyData)
     }
 
+    /// Set STATION_DEBUG_EVENTS=1 to log what is forwarded and what arrives, by type.
+    /// Counting rather than logging each event, because forwarding runs at pointer
+    /// rates and per-event logging would itself change the timing being investigated.
+    nonisolated(unsafe) private static var sentCounts: [UInt32: Int] = [:]
+    nonisolated(unsafe) private static var recvCounts: [UInt32: Int] = [:]
+    nonisolated(unsafe) private static var lastReport = Date()
+    private static let debugEvents =
+        ProcessInfo.processInfo.environment["STATION_DEBUG_EVENTS"] == "1"
+
+    private static func note(sent: UInt32?, received: UInt32?) {
+        guard debugEvents else { return }
+        if let sent { sentCounts[sent, default: 0] += 1 }
+        if let received { recvCounts[received, default: 0] += 1 }
+        guard Date().timeIntervalSince(lastReport) > 1 else { return }
+        lastReport = Date()
+        func render(_ counts: [UInt32: Int]) -> String {
+            counts.isEmpty ? "-" : counts.sorted { $0.key < $1.key }
+                .map { "\(typeName($0.key))=\($0.value)" }.joined(separator: " ")
+        }
+        FileHandle.standardError.write(Data(
+            ("[events] sent: \(render(sentCounts))  received: \(render(recvCounts))\n").utf8))
+        sentCounts.removeAll()
+        recvCounts.removeAll()
+    }
+
+    private static func typeName(_ t: UInt32) -> String {
+        switch t {
+        case 1, 2: return "leftMouse"
+        case 5, 6, 7, 27: return "move"
+        case 10: return "keyDown"
+        case 11: return "keyUp"
+        case 12: return "flags"
+        case 14: return "systemDefined"
+        case 22: return "scroll"
+        case 29: return "gesture"
+        case 30: return "magnify"
+        default: return "type\(t)"
+        }
+    }
+
     public static func hex(_ data: Data) -> DeviceID {
         data.map { String(format: "%02x", $0) }.joined()
     }
@@ -360,7 +400,11 @@ public final class SessionController: @unchecked Sendable {
 
         case .input:
             guard let event = InputEvent.decode(payload) else { return }
-            injection.inject(event)
+            Self.note(sent: nil, received: event.eventType)
+            if !injection.inject(event), Self.debugEvents {
+                FileHandle.standardError.write(Data(
+                    "[events] could not rehydrate type \(event.eventType)\n".utf8))
+            }
 
         case .layout:
             guard let incoming = try? JSONDecoder().decode(ScreenLayoutGrid.self, from: payload),
@@ -396,6 +440,7 @@ public final class SessionController: @unchecked Sendable {
         }
         // The hot path: one send, no lock, no lookup.
         capture.onEvent = { [weak self] event in
+            Self.note(sent: event.eventType, received: nil)
             self?.activeLink?.send(.input, event.encode())
         }
         capture.onEnterPeer = { [weak self] peer, at in
