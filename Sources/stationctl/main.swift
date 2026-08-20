@@ -349,6 +349,40 @@ case "doctor":
     print("")
     exit(0)
 
+case "watch-secure-input":
+    // Secure Event Input has no owner API and leaves no trace once released, so the
+    // only way to attribute it is to be watching when it flips. Records the frontmost
+    // application at each transition, which is the best available evidence.
+    let interval = Double(flag("interval") ?? "0.25") ?? 0.25
+    let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Station-secure-input.log")
+    nonisolated(unsafe) var previous = SecureInput.isEnabled
+
+    func record(_ line: String) {
+        let stamped = "\(Date().formatted(date: .abbreviated, time: .standard))  \(line)\n"
+        FileHandle.standardOutput.write(Data(stamped.utf8))
+        if let h = try? FileHandle(forWritingTo: logURL) {
+            h.seekToEndOfFile(); h.write(Data(stamped.utf8)); try? h.close()
+        } else {
+            try? stamped.write(to: logURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    record("watching. currently \(previous ? "ENABLED" : "off"). log: \(logURL.path)")
+    Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+        let now = SecureInput.isEnabled
+        guard now != previous else { return }
+        previous = now
+        let front = NSWorkspace.shared.frontmostApplication
+        let name = front?.localizedName ?? "unknown"
+        let bundle = front?.bundleIdentifier ?? "-"
+        record("secure input \(now ? "ENABLED " : "released") "
+             + "while frontmost app was \(name) [\(bundle)]")
+    }
+    record("Leave this running. Use both Macs normally; when the keyboard stops")
+    record("forwarding, this will name whatever was frontmost at that moment.")
+    CFRunLoopRun()
+
 case "discover":
     let browser = PeerBrowser()
     browser.onPeersChanged = { peers in
@@ -453,6 +487,11 @@ default:
       stationctl dock-test
           Move the cursor to the bottom edge with synthetic events and watch
           whether an auto-hidden Dock reveals. Run on the receiving Mac.
+
+      stationctl watch-secure-input [--interval 0.25]
+          Watch for Secure Event Input turning on or off, recording the
+          frontmost app at each transition. It leaves no trace once released,
+          so catching it in the act is the only way to attribute it.
 
       stationctl doctor
           Report Secure Event Input, which blocks keyboard forwarding
