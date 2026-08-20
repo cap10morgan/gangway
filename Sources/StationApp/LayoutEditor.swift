@@ -117,8 +117,10 @@ struct LayoutEditorView: View {
         if model.universalControlEdgesEnabled {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "info.circle")
-                Text("If an iPad or another Mac sits at one of these edges, Universal "
-                     + "Control will take the pointer there first.")
+                Text("Universal Control also watches screen edges. If it is on, the "
+                     + "pointer can jump to a nearby iPad, and moving between Macs may "
+                     + "feel jerky even when it does not. Turning off \"Push through "
+                     + "the edge of a display\" makes Station's edges more reliable.")
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Displays…") { model.openDisplaysSettings() }
                     .controlSize(.small)

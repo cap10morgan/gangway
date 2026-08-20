@@ -7,12 +7,15 @@ public enum SystemConflicts {
     /// Whether Universal Control is allowed to hand the pointer to a nearby device by
     /// pushing through a screen edge.
     ///
-    /// Being enabled does **not** mean Station is broken: the two coexist happily
-    /// unless a Universal Control device sits at the same edge as a Station Mac, in
-    /// which case Continuity claims the pointer first because it acts below the event
-    /// tap. Which edge it occupies is not discoverable — the setting's `Configuration`
-    /// is an opaque Continuity archive — so this can only ever say the conflict is
-    /// *possible*, never that it is happening.
+    /// The two can coexist, but not cleanly. Continuity watches screen edges too, and
+    /// acts below the event tap, so it claims the pointer first when one of its devices
+    /// sits at the same edge. Even when it does not take the pointer, having both
+    /// watching the same edges was observed to make crossings feel jerky and to make
+    /// the cursor briefly vanish; turning it off resolved that.
+    ///
+    /// Which edge its devices occupy is not discoverable — the setting's
+    /// `Configuration` is an opaque Continuity archive — so this can only say the
+    /// conflict is *possible*, never that it is happening.
     ///
     /// That is why this belongs next to the arrangement, where edges are being chosen,
     /// rather than as a standing warning. Enabled is the default, so a permanent alarm

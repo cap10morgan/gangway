@@ -95,9 +95,14 @@ public final class SessionController: @unchecked Sendable {
     /// Set STATION_DEBUG_EVENTS=1 to log what is forwarded and what arrives, by type.
     /// Counting rather than logging each event, because forwarding runs at pointer
     /// rates and per-event logging would itself change the timing being investigated.
+    /// Guarded: `note` is called from the tap thread when sending and from the network
+    /// queue when receiving, so these were being mutated from two threads at pointer
+    /// rates. Concurrent Dictionary mutation is undefined behaviour, and instrumentation
+    /// that destabilises the thing it measures is worse than none.
     nonisolated(unsafe) private static var sentCounts: [UInt32: Int] = [:]
     nonisolated(unsafe) private static var recvCounts: [UInt32: Int] = [:]
     nonisolated(unsafe) private static var lastReport = Date()
+    private static let countsLock = NSLock()
     /// Enabled by environment for the CLI, or by
     /// `defaults write com.station.Station STATION_DEBUG_EVENTS -bool YES` for the app,
     /// which has no console to read.
@@ -128,18 +133,31 @@ public final class SessionController: @unchecked Sendable {
     }
 
     private static func note(sent: UInt32?, received: UInt32?) {
+        // Checked before taking the lock so this costs nothing when logging is off,
+        // which is the case that runs on the input hot path.
         guard debugEvents else { return }
+
+        countsLock.lock()
         if let sent { sentCounts[sent, default: 0] += 1 }
         if let received { recvCounts[received, default: 0] += 1 }
-        guard Date().timeIntervalSince(lastReport) > 1 else { return }
+        guard Date().timeIntervalSince(lastReport) > 1 else {
+            countsLock.unlock()
+            return
+        }
         lastReport = Date()
+        let sentSnapshot = sentCounts
+        let recvSnapshot = recvCounts
+        sentCounts.removeAll()
+        recvCounts.removeAll()
+        countsLock.unlock()
+
         func render(_ counts: [UInt32: Int]) -> String {
             counts.isEmpty ? "-" : counts.sorted { $0.key < $1.key }
                 .map { "\(typeName($0.key))=\($0.value)" }.joined(separator: " ")
         }
-        debugLog("sent: \(render(sentCounts))  received: \(render(recvCounts))")
-        sentCounts.removeAll()
-        recvCounts.removeAll()
+        // Writing to disk outside the lock, and off the thread that delivered the event.
+        let line = "sent: \(render(sentSnapshot))  received: \(render(recvSnapshot))"
+        DispatchQueue.global(qos: .utility).async { debugLog(line) }
     }
 
     private static func typeName(_ t: UInt32) -> String {
