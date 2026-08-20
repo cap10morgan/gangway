@@ -324,9 +324,20 @@ case "doctor":
         print("    Usual cause: Terminal > Secure Keyboard Entry. Also focused password")
         print("    fields and some password managers.")
     }
-    let owner = SecureInput.holdingProcess()
-    if let owner {
-        print("    held by: pid \(owner.pid)\(owner.name.map { " (\($0))" } ?? "")")
+    if SecureInput.isEnabled {
+        // macOS exposes no way to identify the holder, so say what to check instead of
+        // pretending to know.
+        if let guess = SecureInput.likelyHolder() {
+            print("    frontmost app right now: \(guess)  (a guess, not the answer)")
+        }
+        print("")
+        print("    macOS does not report which process holds it. Check, in order:")
+        for cause in SecureInput.commonCauses {
+            print("      - \(cause)")
+        }
+        print("")
+        print("    If none apply, an app may have crashed while holding it. Logging out")
+        print("    and back in clears that.")
     }
     print("")
     print("  This process (NOT Station.app; a CLI inherits the terminal's grants)")

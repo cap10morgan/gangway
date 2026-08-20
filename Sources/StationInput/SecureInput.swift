@@ -14,30 +14,27 @@ import AppKit
 public enum SecureInput {
     public static var isEnabled: Bool { IsSecureEventInputEnabled() }
 
-    /// Which process turned it on, when that can be determined.
+    /// macOS exposes no way to identify which process holds Secure Event Input.
     ///
-    /// The window server records the owning pid in its session properties. There is no
-    /// API for it, so this reads the same value `ioreg` exposes; it is advisory only,
-    /// and naming the culprit turns an unexplained failure into an obvious one.
-    public static func holdingProcess() -> (pid: pid_t, name: String?)? {
+    /// Verified rather than assumed: holding it in a test process produced no
+    /// `kCGSSessionSecureInputPID` entry, nor any secure-related key under
+    /// `IOHIDSystem`, so the widely repeated `ioreg` recipe finds nothing on current
+    /// macOS. An earlier version of this shipped that lookup and would have silently
+    /// reported "unknown" forever.
+    ///
+    /// The frontmost application is a reasonable guess, since the common holders take
+    /// it while focused, but it is a guess and is labelled as one.
+    public static func likelyHolder() -> String? {
         guard isEnabled else { return nil }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-        task.arguments = ["-l", "-w", "0", "-d", "1", "-k", "kCGSSessionSecureInputPID"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        guard (try? task.run()) != nil else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-
-        guard let text = String(data: data, encoding: .utf8),
-              let line = text.split(separator: "\n")
-                .first(where: { $0.contains("kCGSSessionSecureInputPID") }),
-              let value = line.split(separator: "=").last,
-              let pid = pid_t(value.trimmingCharacters(in: .whitespaces)) else { return nil }
-
-        let name = NSRunningApplication(processIdentifier: pid)?.localizedName
-        return (pid, name)
+        return NSWorkspace.shared.frontmostApplication?.localizedName
     }
+
+    /// The applications that habitually enable it, worth checking by hand.
+    public static let commonCauses = [
+        "Terminal: Terminal menu > Secure Keyboard Entry",
+        "iTerm2: iTerm2 menu > Secure Keyboard Entry",
+        "A focused password field in any app",
+        "1Password and similar, while their window has focus",
+        "The login window or fast user switching",
+    ]
 }
