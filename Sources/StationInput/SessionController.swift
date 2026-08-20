@@ -353,14 +353,29 @@ public final class SessionController: @unchecked Sendable {
     private func drop(_ link: StationLink, id: DeviceID?, reason: String?) {
         lock.lock()
         pending.removeValue(forKey: ObjectIdentifier(link))
+        var wasActive = false
         if let id {
-            if links[id] === activeLink { activeLink = nil }
+            if links[id] === activeLink {
+                activeLink = nil
+                wasActive = true
+            }
             links.removeValue(forKey: id)
             ready.remove(id)
             if heldCrossing?.peer == id { heldCrossing = nil }
         }
         let name = id.flatMap { names[$0] } ?? "a Mac"
         lock.unlock()
+
+        // Take control back. Clearing the link alone left the capture forwarding to a
+        // peer that is gone: every keystroke and mouse move was still being swallowed
+        // locally and sent nowhere, so the Mac appeared dead until the escape hatch was
+        // found. A peer that disappears must hand control back, not take it with it.
+        if wasActive {
+            DispatchQueue.main.async { [weak self] in
+                self?.capture?.returnControlLocally()
+            }
+            onEvent?(.controlMoved(remote: false, peer: nil))
+        }
         onEvent?(.peerDisconnected(name: name, reason: reason))
     }
 
