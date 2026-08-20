@@ -30,7 +30,14 @@ public enum SecureInput {
     }
 
     /// The applications that habitually enable it, worth checking by hand.
+    ///
+    /// Ghostty is listed first because it enables secure input *automatically* at
+    /// password prompts and releases it afterwards. That makes it the hardest case to
+    /// attribute: the keyboard stops working, and by the time anyone looks, the prompt
+    /// has finished and nothing appears to be holding it.
     public static let commonCauses = [
+        "Ghostty: enables it automatically at password prompts "
+            + "(macos-auto-secure-input, on by default), and can be toggled from its menu",
         "Terminal: Terminal menu > Secure Keyboard Entry",
         "iTerm2: iTerm2 menu > Secure Keyboard Entry",
         "A focused password field in any app",
