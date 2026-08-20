@@ -79,6 +79,8 @@ public final class SessionController: @unchecked Sendable {
     /// control moves would miss exactly the case that is hardest to diagnose.
     nonisolated(unsafe) private var secureInputBlocked = false
     nonisolated(unsafe) private var lastSecureInputCheck = Date.distantPast
+    /// Guards against control being stuck on a peer that is no longer usable.
+    private var forwardingWatchdog: Timer?
 
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
@@ -183,6 +185,8 @@ public final class SessionController: @unchecked Sendable {
     }
 
     public func stop() {
+        forwardingWatchdog?.invalidate()
+        forwardingWatchdog = nil
         clipboard.stop()
         if let capture {
             if Thread.isMainThread { capture.stop() }
@@ -529,11 +533,14 @@ public final class SessionController: @unchecked Sendable {
         }
 
         DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
             do {
                 try capture.start()
             } catch {
-                self?.onEvent?(.failed(error.localizedDescription))
+                self.onEvent?(.failed(error.localizedDescription))
+                return
             }
+            self.startForwardingWatchdog()
         }
     }
 
@@ -566,6 +573,30 @@ public final class SessionController: @unchecked Sendable {
         guard let held else { return }
         DispatchQueue.main.async { [weak self] in
             self?.capture?.beginForwarding(to: held.peer, entry: held.entry)
+        }
+    }
+
+    /// Return control if it is stuck on a peer that can no longer receive it.
+    ///
+    /// Forwarding swallows every local event, so a capture left pointing at a gone or
+    /// unready peer makes the Mac look dead, or worse, quietly sends input somewhere
+    /// the user is not looking. Two separate bugs produced exactly that, which is
+    /// reason enough to check the invariant continuously rather than trusting every
+    /// path to unwind correctly.
+    private func startForwardingWatchdog() {
+        forwardingWatchdog?.invalidate()
+        forwardingWatchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, let capture = self.capture,
+                  case .forwarding(let peer) = capture.mode else { return }
+            self.lock.lock()
+            let usable = self.links[peer] != nil && self.ready.contains(peer)
+            self.lock.unlock()
+            guard !usable else { return }
+
+            Self.debugLog("control was stuck on \(self.names[peer] ?? peer); taking it back")
+            capture.returnControlLocally()
+            self.activeLink = nil
+            self.onEvent?(.controlMoved(remote: false, peer: nil))
         }
     }
 
