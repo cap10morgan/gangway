@@ -307,6 +307,35 @@ case "dock-test":
     log("dock", "which variant revealed the Dock? A, B, C, D, or none")
     exit(0)
 
+case "doctor":
+    // Reports what can be checked from here. Note the distinction: secure input is a
+    // system-wide state, so this reading is authoritative for the whole login session,
+    // while the permission lines describe THIS process, which inherits the terminal's
+    // grants and says nothing about Station.app's.
+    print("")
+    print("  Secure Event Input (system-wide, blocks keyboard for every event tap)")
+    print("    enabled: \(SecureInput.isEnabled)")
+    if SecureInput.isEnabled {
+        print("")
+        print("    While this is on, no application can receive keystrokes through an")
+        print("    event tap, so Station cannot forward them. The pointer is unaffected,")
+        print("    which is why it looks like only the keyboard is broken.")
+        print("")
+        print("    Usual cause: Terminal > Secure Keyboard Entry. Also focused password")
+        print("    fields and some password managers.")
+    }
+    let owner = SecureInput.holdingProcess()
+    if let owner {
+        print("    held by: pid \(owner.pid)\(owner.name.map { " (\($0))" } ?? "")")
+    }
+    print("")
+    print("  This process (NOT Station.app; a CLI inherits the terminal's grants)")
+    let p = Permissions.current()
+    print("    accessibility:   \(p.accessibility)")
+    print("    inputMonitoring: \(p.inputMonitoring)")
+    print("")
+    exit(0)
+
 case "discover":
     let browser = PeerBrowser()
     browser.onPeersChanged = { peers in
@@ -411,6 +440,10 @@ default:
       stationctl dock-test
           Move the cursor to the bottom edge with synthetic events and watch
           whether an auto-hidden Dock reveals. Run on the receiving Mac.
+
+      stationctl doctor
+          Report Secure Event Input, which blocks keyboard forwarding
+          system-wide, and this process's own permissions.
 
       stationctl discover
           Browse for Station peers and report what resolved.
