@@ -97,8 +97,14 @@ public final class SessionController: @unchecked Sendable {
         ProcessInfo.processInfo.environment["STATION_DEBUG_EVENTS"] == "1"
         || UserDefaults.standard.bool(forKey: "STATION_DEBUG_EVENTS")
 
-    private static let debugLogURL = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("station-events.log")
+    /// ~/Library/Logs/Station.log, not the temp directory. The temp path differs per
+    /// user and per launch context, so "tail the log" turned into a hunt for the file.
+    private static let debugLogURL: URL = {
+        let logs = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        return logs.appendingPathComponent("Station.log")
+    }()
 
     /// Appends rather than printing: the app writes nowhere a user can see.
     static func debugLog(_ line: String) {
