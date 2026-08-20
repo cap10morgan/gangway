@@ -437,6 +437,10 @@ final class AppModel {
             statusMessage = "Paired with \(name)"
         case .peerRenamed(let peer, let name):
             renamePlacement(peer, to: name)
+        case .keyboardBlocked:
+            lastError = "Another app has Secure Keyboard Entry turned on, so keystrokes "
+                      + "cannot be sent to the other Mac. Terminal's Secure Keyboard "
+                      + "Entry setting is the usual cause."
         case .layoutChanged(let incoming):
             // Already applied to the capture layer by the session; store and show it.
             grid = incoming
@@ -475,6 +479,7 @@ final class AppModel {
         case .peerConnected(let n):         return "connected to \(n)"
         case .peerRenamed(_, let n):        return "peer is named \(n)"
         case .layoutChanged:                return "arrangement updated by another Mac"
+        case .keyboardBlocked:              return "keyboard blocked by secure input"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
         case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"

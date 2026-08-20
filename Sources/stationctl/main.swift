@@ -127,6 +127,8 @@ case "run":
             log("station", "connected to \(name)")
         case .peerRenamed(_, let name):
             log("station", "peer is named \(name)")
+        case .keyboardBlocked:
+            log("station", "SECURE INPUT is on: keystrokes will not forward")
         case .layoutChanged(let incoming):
             LayoutStore.save(incoming)
             log("station", "arrangement updated by another Mac (\(incoming.placements.count) Macs)")

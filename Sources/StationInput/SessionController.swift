@@ -30,6 +30,9 @@ public final class SessionController: @unchecked Sendable {
         case peerRenamed(peer: DeviceID, name: String)
         /// A newer arrangement arrived from another Mac.
         case layoutChanged(ScreenLayoutGrid)
+        /// Another app has Secure Event Input on, so keystrokes cannot be forwarded.
+        /// Reported when control moves, which is the moment it starts mattering.
+        case keyboardBlocked
         case peerDisconnected(name: String, reason: String?)
         /// Control moved to a peer, or came back here.
         case controlMoved(remote: Bool, peer: String?)
@@ -87,8 +90,28 @@ public final class SessionController: @unchecked Sendable {
     nonisolated(unsafe) private static var sentCounts: [UInt32: Int] = [:]
     nonisolated(unsafe) private static var recvCounts: [UInt32: Int] = [:]
     nonisolated(unsafe) private static var lastReport = Date()
+    /// Enabled by environment for the CLI, or by
+    /// `defaults write com.station.Station STATION_DEBUG_EVENTS -bool YES` for the app,
+    /// which has no console to read.
     private static let debugEvents =
         ProcessInfo.processInfo.environment["STATION_DEBUG_EVENTS"] == "1"
+        || UserDefaults.standard.bool(forKey: "STATION_DEBUG_EVENTS")
+
+    private static let debugLogURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("station-events.log")
+
+    /// Appends rather than printing: the app writes nowhere a user can see.
+    static func debugLog(_ line: String) {
+        guard debugEvents else { return }
+        let stamped = "\(Date().formatted(date: .omitted, time: .standard))  \(line)\n"
+        if let handle = try? FileHandle(forWritingTo: debugLogURL) {
+            handle.seekToEndOfFile()
+            handle.write(Data(stamped.utf8))
+            try? handle.close()
+        } else {
+            try? stamped.write(to: debugLogURL, atomically: true, encoding: .utf8)
+        }
+    }
 
     private static func note(sent: UInt32?, received: UInt32?) {
         guard debugEvents else { return }
@@ -100,8 +123,7 @@ public final class SessionController: @unchecked Sendable {
             counts.isEmpty ? "-" : counts.sorted { $0.key < $1.key }
                 .map { "\(typeName($0.key))=\($0.value)" }.joined(separator: " ")
         }
-        FileHandle.standardError.write(Data(
-            ("[events] sent: \(render(sentCounts))  received: \(render(recvCounts))\n").utf8))
+        debugLog("sent: \(render(sentCounts))  received: \(render(recvCounts))")
         sentCounts.removeAll()
         recvCounts.removeAll()
     }
@@ -401,9 +423,8 @@ public final class SessionController: @unchecked Sendable {
         case .input:
             guard let event = InputEvent.decode(payload) else { return }
             Self.note(sent: nil, received: event.eventType)
-            if !injection.inject(event), Self.debugEvents {
-                FileHandle.standardError.write(Data(
-                    "[events] could not rehydrate type \(event.eventType)\n".utf8))
+            if !injection.inject(event) {
+                Self.debugLog("could not rehydrate type \(event.eventType)")
             }
 
         case .layout:
@@ -427,6 +448,13 @@ public final class SessionController: @unchecked Sendable {
     // MARK: - Capture
 
     private func startCapture() {
+        // Keyboard events reach a tap only with Input Monitoring; Accessibility alone
+        // gets the tap created and mouse events flowing. Missing it looks exactly like
+        // "the pointer moves but nothing types".
+        let permissions = Permissions.current()
+        Self.debugLog("capture starting: accessibility=\(permissions.accessibility) "
+                    + "inputMonitoring=\(permissions.inputMonitoring) "
+                    + "secureInput=\(SecureInput.isEnabled)")
         let capture = EventCapture(layout: grid.layout(for: localDeviceID))
         self.capture = capture
 
@@ -445,6 +473,12 @@ public final class SessionController: @unchecked Sendable {
         }
         capture.onEnterPeer = { [weak self] peer, at in
             guard let self else { return }
+            // Checked here rather than polled: it is only a problem while forwarding,
+            // and this is the moment the user will notice keys going nowhere.
+            if SecureInput.isEnabled {
+                Self.debugLog("secure input is enabled; keystrokes will not forward")
+                self.onEvent?(.keyboardBlocked)
+            }
             let link = self.link(for: peer)
             self.activeLink = link
             link?.send(.enterScreen,
