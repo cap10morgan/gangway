@@ -200,7 +200,7 @@ public final class StationLink: @unchecked Sendable {
         case .posix(let code):  return "\(code)"
         case .dns(let code):    return "DNS error \(code)"
         case .tls(let status):  return "TLS error \(status)"
-        @unknown default:       return error.localizedDescription
+        default:                return error.localizedDescription
         }
     }
 
@@ -521,6 +521,31 @@ public final class StationListener: @unchecked Sendable {
     private static func isAddressInUse(_ error: NWError) -> Bool {
         if case .posix(let code) = error { return code == .EADDRINUSE }
         return false
+    }
+
+    /// Whether Station's default port can be bound right now.
+    ///
+    /// Deliberately does not go through `start`, which falls back to an ephemeral port
+    /// when the default is taken. That fallback lets tests bind freely, but it also
+    /// means a caller asking "is another Station running here?" would always be told no.
+    public static func defaultPortAvailable(timeout: TimeInterval = 1.5) -> Bool {
+        guard let port = NWEndpoint.Port(rawValue: stationDefaultPort),
+              let probe = try? NWListener(using: TransportParameters.make(), on: port) else {
+            return false
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var available = false
+        probe.stateUpdateHandler = { state in
+            switch state {
+            case .ready:  available = true;  semaphore.signal()
+            case .failed: available = false; semaphore.signal()
+            default:      break
+            }
+        }
+        probe.start(queue: .global())
+        _ = semaphore.wait(timeout: .now() + timeout)
+        probe.cancel()
+        return available
     }
 
     /// The bound port, or nil until the listener is ready. `NWListener.port` reads back

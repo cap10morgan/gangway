@@ -66,9 +66,24 @@ let command = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "help
 switch command {
 
 case "run":
-    // One command, because there is no controller/controlled distinction any more.
-    // Every Mac listens, captures and injects; whichever one the pointer is on is the
-    // one forwarding.
+    // Refuse to be a second Station on this Mac. Both instances would share one
+    // identity, since identity belongs to the Mac, so every peer would see two entries
+    // it cannot tell apart and only one of them would be the one being watched.
+    if !CommandLine.arguments.contains("--force"),
+       !StationListener.defaultPortAvailable() {
+        print("""
+
+        Station is already running on this Mac (port \(stationDefaultPort) is in use).
+
+        Quit Station.app first. Running both would share one identity between them, so
+        every other Mac would list this one twice with no way to tell which is which.
+
+        Pass --force to run anyway.
+
+        """)
+        exit(1)
+    }
+
     let session = SessionController(deviceName: Host.current().localizedName ?? "Mac")
     session.installTerminationHandlers()
     session.clipboardSyncEnabled = CommandLine.arguments.contains("--clipboard")
@@ -310,7 +325,9 @@ case "probe":
     // Loopback check of the handshake, encryption, and framing.
     let serverIdentity = Identity.generate()
     let clientIdentity = Identity.generate()
+    // Retained so the accepted link is not deallocated mid-handshake.
     nonisolated(unsafe) var serverLink: StationLink?
+    _ = serverLink
 
     let listener = StationListener(deviceName: "probe-secondary", identity: serverIdentity)
     listener.onError = { log("listener", "error: \($0)") }
