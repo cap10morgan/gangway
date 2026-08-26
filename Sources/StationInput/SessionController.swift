@@ -31,7 +31,8 @@ public final class SessionController: @unchecked Sendable {
         /// A newer arrangement arrived from another Mac.
         case layoutChanged(ScreenLayoutGrid)
         /// Another app has Secure Event Input on, so keystrokes cannot be forwarded.
-        case keyboardBlocked
+        /// `holder` is a guess at which app it is, and may be nil; macOS does not say.
+        case keyboardBlocked(holder: String?)
         /// Secure Event Input was released and keystrokes forward again.
         case keyboardUnblocked
         case peerDisconnected(name: String, reason: String?)
@@ -521,6 +522,10 @@ public final class SessionController: @unchecked Sendable {
             guard let self else { return }
             // Only on key events, and at most every two seconds: pointer motion far
             // outnumbers keystrokes, and this must not cost anything on that path.
+            //
+            // This can only ever notice a *release*: while Secure Event Input is on,
+            // no key event reaches the tap, so there is nothing here to trigger on.
+            // Noticing it being turned on is the watchdog's job.
             if event.eventType == 10 || event.eventType == 11 {
                 self.checkSecureInput()
             }
@@ -530,7 +535,7 @@ public final class SessionController: @unchecked Sendable {
             guard let self else { return }
             // Checked here rather than polled: it is only a problem while forwarding,
             // and this is the moment the user will notice keys going nowhere.
-            self.checkSecureInput(force: true)
+            self.checkSecureInput(throttled: false, announceIfBlocked: true)
             let link = self.link(for: peer)
             self.activeLink = link
             link?.send(.enterScreen,
@@ -606,6 +611,14 @@ public final class SessionController: @unchecked Sendable {
         forwardingWatchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let self, let capture = self.capture,
                   case .forwarding(let peer) = capture.mode else { return }
+
+            // Polled, and only while forwarding. Any app can turn Secure Event Input on
+            // at any moment, and the instant it does, key events stop arriving at the
+            // tap entirely -- so there is no event left to notice it by. Without this
+            // poll the one case that actually needs reporting, it being switched on
+            // mid-session, is the one case that would never be reported.
+            self.checkSecureInput(throttled: false)
+
             self.lock.lock()
             let usable = self.links[peer] != nil && self.ready.contains(peer)
             self.lock.unlock()
@@ -619,16 +632,25 @@ public final class SessionController: @unchecked Sendable {
     }
 
     /// Report Secure Event Input when it changes, in either direction.
-    private func checkSecureInput(force: Bool = false) {
+    ///
+    /// - Parameters:
+    ///   - throttled: skip if checked recently. The keystroke path passes true, since
+    ///     it runs once per key.
+    ///   - announceIfBlocked: report even when nothing changed. Used at the moment
+    ///     control crosses to a peer, where the user is about to type and needs to be
+    ///     told now, not when the state last flipped.
+    private func checkSecureInput(throttled: Bool = true, announceIfBlocked: Bool = false) {
         let now = Date()
-        guard force || now.timeIntervalSince(lastSecureInputCheck) > 2 else { return }
+        if throttled, now.timeIntervalSince(lastSecureInputCheck) < 2 { return }
         lastSecureInputCheck = now
 
         let blocked = SecureInput.isEnabled
-        guard blocked != secureInputBlocked || (force && blocked) else { return }
+        let changed = blocked != secureInputBlocked
         secureInputBlocked = blocked
+        guard changed || (announceIfBlocked && blocked) else { return }
         Self.debugLog("secure input \(blocked ? "enabled" : "released")")
-        onEvent?(blocked ? .keyboardBlocked : .keyboardUnblocked)
+        onEvent?(blocked ? .keyboardBlocked(holder: SecureInput.likelyHolder())
+                         : .keyboardUnblocked)
     }
 
     private func link(for peer: DeviceID) -> StationLink? {

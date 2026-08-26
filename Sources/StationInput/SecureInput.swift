@@ -29,6 +29,15 @@ public enum SecureInput {
         return NSWorkspace.shared.frontmostApplication?.localizedName
     }
 
+    /// The same list, trimmed for a panel the user reads while their keyboard is
+    /// half-broken. Ordered by how likely it is to be the answer, and phrased as
+    /// things to go and do rather than things that are true.
+    public static let quickFixes = [
+        "Ghostty: turn off Secure Keyboard Entry in its menu",
+        "Terminal or iTerm2: uncheck Secure Keyboard Entry in the app menu",
+        "Click out of any password field, or close a password manager window",
+    ]
+
     /// The applications that habitually enable it, worth checking by hand.
     ///
     /// Ghostty is listed first because it enables secure input *automatically* at

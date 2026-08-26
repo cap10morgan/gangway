@@ -56,6 +56,9 @@ final class AppModel {
     var awaitingApproval: (name: String, code: String)?
 
     var connectedPeer: String?
+    /// Set while Secure Event Input is swallowing the keyboard. `holder` is a guess.
+    struct KeyboardBlock: Equatable { var holder: String? }
+    private(set) var keyboardBlockedBy: KeyboardBlock?
     /// Shown while receiving so the connection can be tested directly with
     /// `stationctl connect` when discovery is the thing that is broken.
     var listeningPort: UInt16?
@@ -68,6 +71,7 @@ final class AppModel {
 
     private var session: SessionController?
     private let codePanel = PairingCodePanel()
+    private let secureInputPanel = SecureInputPanel()
     private let browser = PeerBrowser()
     private let deviceName = Host.current().localizedName ?? "Mac"
 
@@ -292,6 +296,8 @@ final class AppModel {
         pendingApproval = nil
         awaitingApproval = nil
         codePanel.hide()
+        keyboardBlockedBy = nil
+        secureInputPanel.hide()
         listeningPort = nil
         statusMessage = "Not running"
     }
@@ -408,6 +414,13 @@ final class AppModel {
         return session
     }
 
+    /// Warn only when both halves of the problem are true: the keyboard is held, and
+    /// we are actually trying to forward it somewhere.
+    private func showSecureInputWarningIfNeeded() {
+        guard controlIsRemote, let block = keyboardBlockedBy else { return }
+        secureInputPanel.show(peer: connectedPeer, holder: block.holder)
+    }
+
     private func record(_ text: String) {
         let stamp = Date().formatted(date: .omitted, time: .standard)
         recentEvents.insert("\(stamp)  \(text)", at: 0)
@@ -438,15 +451,16 @@ final class AppModel {
         case .peerRenamed(let peer, let name):
             renamePlacement(peer, to: name)
         case .keyboardUnblocked:
+            keyboardBlockedBy = nil
+            secureInputPanel.hide()
             // Clear it rather than leaving a stale complaint about a fixed problem.
             if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
-        case .keyboardUnblocked:
-            // Clear it rather than leaving a stale complaint about a fixed problem.
-            if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
-        case .keyboardBlocked:
+        case .keyboardBlocked(let holder):
+            keyboardBlockedBy = .init(holder: holder)
             lastError = "Another app has Secure Keyboard Entry turned on, so keystrokes "
                       + "cannot be sent to the other Mac. Terminal's Secure Keyboard "
                       + "Entry setting is the usual cause."
+            showSecureInputWarningIfNeeded()
         case .layoutChanged(let incoming):
             // Already applied to the capture layer by the session; store and show it.
             grid = incoming
@@ -458,12 +472,19 @@ final class AppModel {
             statusMessage = "Connected to \(name)"
         case .peerDisconnected(let name, let reason):
             codePanel.hide()
+            secureInputPanel.hide()
             connectedPeer = nil
             controlIsRemote = false
             statusMessage = reason.map { "\(name): \($0)" } ?? "\(name) disconnected"
         case .controlMoved(let remote, let peer):
             controlIsRemote = remote
             statusMessage = remote ? "Control is on \(peer ?? "another Mac")" : "Control is here"
+            // Only a problem while forwarding. Secure input on a Mac that is typing
+            // into its own windows is working exactly as intended, so bringing the
+            // warning back up when control comes home would be complaining about
+            // nothing -- and would do it at the exact moment the user went to a
+            // password prompt.
+            remote ? showSecureInputWarningIfNeeded() : secureInputPanel.hide()
         case .clipboardSynced(let sent, let bytes):
             let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
             lastClipboardActivity = sent ? "Clipboard sent (\(size))" : "Clipboard received (\(size))"
@@ -485,7 +506,8 @@ final class AppModel {
         case .peerConnected(let n):         return "connected to \(n)"
         case .peerRenamed(_, let n):        return "peer is named \(n)"
         case .layoutChanged:                return "arrangement updated by another Mac"
-        case .keyboardBlocked:              return "keyboard blocked by secure input"
+        case .keyboardBlocked(let h):       return "keyboard blocked by secure input"
+                                            + (h.map { " (maybe \($0))" } ?? "")
         case .keyboardUnblocked:            return "secure input released"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"

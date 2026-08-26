@@ -127,8 +127,9 @@ case "run":
             log("station", "connected to \(name)")
         case .peerRenamed(_, let name):
             log("station", "peer is named \(name)")
-        case .keyboardBlocked:
-            log("station", "SECURE INPUT is on: keystrokes will not forward")
+        case .keyboardBlocked(let holder):
+            let guess = holder.map { ", probably \($0)" } ?? ""
+            log("station", "SECURE INPUT is on\(guess): keystrokes will not forward")
         case .keyboardUnblocked:
             log("station", "secure input released; keystrokes forward again")
         case .layoutChanged(let incoming):
