@@ -82,6 +82,16 @@ public final class SessionController: @unchecked Sendable {
     nonisolated(unsafe) private var lastSecureInputCheck = Date.distantPast
     /// Guards against control being stuck on a peer that is no longer usable.
     private var forwardingWatchdog: Timer?
+    /// When each peer last proved it was still running Station, as opposed to still
+    /// holding an open socket. Only meaningful while forwarding to that peer.
+    private var lastHeartbeatReply: [DeviceID: Date] = [:]
+
+    private static let heartbeatRequest: UInt8 = 0
+    private static let heartbeatReply: UInt8 = 1
+    /// Three missed beats at the watchdog's two-second interval. Long enough not to
+    /// trip on a momentary Wi-Fi stall, short enough that a user staring at a screen
+    /// with no pointer is not left wondering for long.
+    private static let heartbeatDeadline: TimeInterval = 6
 
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
@@ -384,6 +394,7 @@ public final class SessionController: @unchecked Sendable {
             }
             links.removeValue(forKey: id)
             ready.remove(id)
+            lastHeartbeatReply.removeValue(forKey: id)
             if heldCrossing?.peer == id { heldCrossing = nil }
         }
         let name = id.flatMap { names[$0] } ?? "a Mac"
@@ -461,6 +472,18 @@ public final class SessionController: @unchecked Sendable {
                 self?.markReady(peer)
             }
 
+        case .heartbeat:
+            // One byte distinguishes the two directions, so an echo cannot be mistaken
+            // for a request and bounce between the two Macs forever.
+            guard let first = payload.first else { return }
+            if first == Self.heartbeatRequest {
+                link.send(.heartbeat, Data([Self.heartbeatReply]))
+            } else if let peer {
+                lock.lock()
+                lastHeartbeatReply[peer] = Date()
+                lock.unlock()
+            }
+
         case .enterScreen:
             guard let msg = EnterScreen.decode(payload) else { return }
             injection.enter(at: NormalizedPoint(x: msg.normalizedX, y: msg.normalizedY))
@@ -536,6 +559,11 @@ public final class SessionController: @unchecked Sendable {
             // Checked here rather than polled: it is only a problem while forwarding,
             // and this is the moment the user will notice keys going nowhere.
             self.checkSecureInput(throttled: false, announceIfBlocked: true)
+            // Start the liveness clock fresh, so a peer is never judged on silence
+            // from before it was being forwarded to.
+            self.lock.lock()
+            self.lastHeartbeatReply[peer] = Date()
+            self.lock.unlock()
             let link = self.link(for: peer)
             self.activeLink = link
             link?.send(.enterScreen,
@@ -621,10 +649,26 @@ public final class SessionController: @unchecked Sendable {
 
             self.lock.lock()
             let usable = self.links[peer] != nil && self.ready.contains(peer)
+            // A peer that has not answered in time is not usable, whatever the socket
+            // says. TCP keepalive is not enough on its own: a sleeping Mac behind a
+            // Bonjour sleep proxy keeps answering at the network layer long after
+            // Station has stopped running there, so the connection looks healthy while
+            // every forwarded event goes nowhere -- and the pointer is hidden locally
+            // the whole time, which is what makes this worth defending against.
+            let silent = self.lastHeartbeatReply[peer].map {
+                Date().timeIntervalSince($0) > Self.heartbeatDeadline
+            } ?? false
+            // Read under the same lock; the link map is mutated from the network queue.
+            let link = self.links[peer]
             self.lock.unlock()
-            guard !usable else { return }
 
-            Self.debugLog("control was stuck on \(self.names[peer] ?? peer); taking it back")
+            guard !usable || silent else {
+                link?.send(.heartbeat, Data([Self.heartbeatRequest]))
+                return
+            }
+
+            let why = silent ? " (stopped answering)" : ""
+            Self.debugLog("control was stuck on \(self.names[peer] ?? peer)\(why); taking it back")
             capture.returnControlLocally()
             self.activeLink = nil
             self.onEvent?(.controlMoved(remote: false, peer: nil))

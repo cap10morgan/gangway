@@ -450,6 +450,16 @@ case "probe":
     DispatchQueue.global().asyncAfter(deadline: .now() + 10) { log("probe", "TIMED OUT"); exit(1) }
     dispatchMain()
 
+case "unstick":
+    // Recovery for a pointer left broken by a Station process that died without
+    // unwinding -- hidden, decoupled, or both. Worth a first-class command precisely
+    // because the user cannot click anything to fix it: this has to be reachable from
+    // a keyboard alone.
+    CursorControl.forceRelease()
+    print("Cursor shown, re-associated with the mouse, and moved to the centre.")
+    print("If it is still stuck, log out and back in; that always clears it.")
+    exit(0)
+
 case "cursor-selftest":
     let mode = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "exit"
     CursorControl.installSafetyNet()
@@ -506,6 +516,10 @@ default:
 
       stationctl cursor-selftest [exit|signal]
           Hide the cursor, then verify it is restored on that exit path.
+
+      stationctl unstick
+          Recover a cursor that is invisible or will not respond to the mouse.
+          Safe to run at any time, whether or not Station is running.
 
     First pairing asks for approval on the Mac being joined, showing six digits
     that the other Mac also displays. They are a comparison, not a secret.

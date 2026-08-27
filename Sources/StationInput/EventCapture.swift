@@ -280,11 +280,21 @@ public final class EventCapture: @unchecked Sendable {
         CursorControl.hide()
     }
 
+    /// Order matters here, and getting it wrong strands the user with a live cursor
+    /// that no mouse can move.
+    ///
+    /// `CGWarpMouseCursorPosition` opens a local-events suppression interval during
+    /// which physical mouse deltas are discarded, and the documented way to end it
+    /// early is to call `CGAssociateMouseAndMouseCursorPosition(true)` *after* the
+    /// warp. Associating first and warping second leaves the suppression running, and
+    /// if the process then exits -- which is exactly what the termination path does --
+    /// nothing is left alive to clear it. The cursor stays visible, parked where it
+    /// was left, and permanently deaf to the trackpad.
     private func releaseCursor() {
         CursorControl.show()
-        CGAssociateMouseAndMouseCursorPosition(1)
         if parkedCursor != .zero {
             CGWarpMouseCursorPosition(parkedCursor)
         }
+        CGAssociateMouseAndMouseCursorPosition(1)
     }
 }

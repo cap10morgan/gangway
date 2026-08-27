@@ -73,6 +73,24 @@ public enum CursorControl {
         isHidden = false
     }
 
+    /// Put the pointer back into a usable state no matter what left it broken.
+    ///
+    /// Recovery for the case where a Station process died without unwinding: a hidden
+    /// or decoupled cursor outlives it, and the user is left unable to click the very
+    /// interface that would fix it. Association turns out to be global WindowServer
+    /// state rather than per-connection, so unlike cursor hiding this *can* be repaired
+    /// from a different process -- which is what makes a recovery command possible.
+    public static func forceRelease() {
+        lock.lock()
+        isHidden = false
+        lock.unlock()
+        CGDisplayShowCursor(CGMainDisplayID())
+        let bounds = CGDisplayBounds(CGMainDisplayID())
+        CGWarpMouseCursorPosition(CGPoint(x: bounds.midX, y: bounds.midY))
+        // After the warp, so the suppression interval it opens is ended immediately.
+        CGAssociateMouseAndMouseCursorPosition(1)
+    }
+
     /// Whether hiding is expected to actually work on this system.
     public static var canHideInBackground: Bool {
         lock.lock()
@@ -120,6 +138,13 @@ public enum CursorControl {
             if CursorControl.isHiddenUnsafe {
                 CGDisplayShowCursor(CGMainDisplayID())
             }
+            // Unconditional, and last. Leaving the mouse decoupled strands the user
+            // with a cursor no trackpad can move, and unlike a hidden cursor there is
+            // no incidental event that restores it -- it survives until something
+            // calls this. It is idempotent and costs nothing when already associated,
+            // so it is not worth making conditional on our own bookkeeping being
+            // right: the whole point of this path is that something went wrong.
+            CGAssociateMouseAndMouseCursorPosition(1)
         }
 
         // Ctrl-C and orderly shutdown. DispatchSource rather than a raw signal handler,
@@ -133,6 +158,8 @@ public enum CursorControl {
                 lock.unlock()
                 for block in cleanup { block() }
                 CursorControl.show()
+                // Belt and braces before a hard exit; see the note in `atexit`.
+                CGAssociateMouseAndMouseCursorPosition(1)
                 exit(128 + sig)
             }
             source.resume()
