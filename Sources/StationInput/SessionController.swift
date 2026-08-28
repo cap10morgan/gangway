@@ -85,13 +85,35 @@ public final class SessionController: @unchecked Sendable {
     /// When each peer last proved it was still running Station, as opposed to still
     /// holding an open socket. Only meaningful while forwarding to that peer.
     private var lastHeartbeatReply: [DeviceID: Date] = [:]
+    /// When anything at all last arrived from a peer. Any frame proves Station is alive
+    /// there, so this is broader evidence than a heartbeat reply and costs nothing.
+    private var lastInbound: [DeviceID: Date] = [:]
+    /// Peers that have actually answered a heartbeat at least once.
+    ///
+    /// Silence is only evidence of death from a peer that has been shown to speak.
+    /// Without this gate the check condemns every peer running a build older than the
+    /// heartbeat itself: they ignore an unknown message type, never reply, and get
+    /// their control yanked away mid-use every few seconds. That is a worse failure
+    /// than the one the heartbeat was added to prevent, and it is self-inflicted --
+    /// a new version of Station must not decide that an old one is dead.
+    private var speaksHeartbeat: Set<DeviceID> = []
 
     private static let heartbeatRequest: UInt8 = 0
     private static let heartbeatReply: UInt8 = 1
-    /// Three missed beats at the watchdog's two-second interval. Long enough not to
-    /// trip on a momentary Wi-Fi stall, short enough that a user staring at a screen
-    /// with no pointer is not left wondering for long.
-    private static let heartbeatDeadline: TimeInterval = 6
+    /// Deliberately long, because the two failure modes are not symmetric.
+    ///
+    /// Reclaiming late costs the user a few seconds in front of an unresponsive peer,
+    /// and Control-Option-Escape already gets them out of that immediately. Reclaiming
+    /// wrongly snatches the pointer mid-use and parks it back at the screen edge, which
+    /// reads as the cursor being broken rather than as a peer problem -- and it happens
+    /// while the user is actively working, not while they are already stuck.
+    ///
+    /// Six seconds proved too eager against a peer that was alive: replies are handled
+    /// in frame order on the connection's receive queue, behind however many input
+    /// events are already queued for injection, so this measures round-trip latency
+    /// under load as much as it measures liveness. Fifteen seconds of total silence
+    /// from a Mac that is being actively driven is not something latency explains.
+    private static let heartbeatDeadline: TimeInterval = 15
 
     public var clipboardSyncEnabled = false {
         didSet { clipboardSyncEnabled ? startClipboard() : clipboard.stop() }
@@ -395,6 +417,8 @@ public final class SessionController: @unchecked Sendable {
             links.removeValue(forKey: id)
             ready.remove(id)
             lastHeartbeatReply.removeValue(forKey: id)
+            lastInbound.removeValue(forKey: id)
+            speaksHeartbeat.remove(id)
             if heldCrossing?.peer == id { heldCrossing = nil }
         }
         let name = id.flatMap { names[$0] } ?? "a Mac"
@@ -440,6 +464,14 @@ public final class SessionController: @unchecked Sendable {
     }
 
     private func handle(type: MessageType, payload: Data, link: StationLink, peer: DeviceID?) {
+        // Any frame at all proves Station is running over there. Recorded before the
+        // switch so it covers message types added later without anyone remembering to.
+        if let peer {
+            lock.lock()
+            lastInbound[peer] = Date()
+            lock.unlock()
+        }
+
         switch type {
         case .hello:
             guard let name = (try? JSONDecoder().decode(Hello.self, from: payload))?.deviceName,
@@ -481,6 +513,7 @@ public final class SessionController: @unchecked Sendable {
             } else if let peer {
                 lock.lock()
                 lastHeartbeatReply[peer] = Date()
+                speaksHeartbeat.insert(peer)
                 lock.unlock()
             }
 
@@ -563,6 +596,7 @@ public final class SessionController: @unchecked Sendable {
             // from before it was being forwarded to.
             self.lock.lock()
             self.lastHeartbeatReply[peer] = Date()
+            self.lastInbound[peer] = Date()
             self.lock.unlock()
             let link = self.link(for: peer)
             self.activeLink = link
@@ -655,19 +689,39 @@ public final class SessionController: @unchecked Sendable {
             // Station has stopped running there, so the connection looks healthy while
             // every forwarded event goes nowhere -- and the pointer is hidden locally
             // the whole time, which is what makes this worth defending against.
-            let silent = self.lastHeartbeatReply[peer].map {
-                Date().timeIntervalSince($0) > Self.heartbeatDeadline
-            } ?? false
+            // Three conditions, all required, because reclaiming control from a peer
+            // that is actually fine is itself a serious failure: it snatches the
+            // pointer back mid-gesture and parks it at the screen edge.
+            let answersHeartbeats = self.speaksHeartbeat.contains(peer)
+            let quiet = { (stamp: Date?) in
+                stamp.map { Date().timeIntervalSince($0) > Self.heartbeatDeadline } ?? false
+            }
+            let lastReply = self.lastHeartbeatReply[peer]
+            let silent = answersHeartbeats
+                && quiet(lastReply)
+                && quiet(self.lastInbound[peer])
             // Read under the same lock; the link map is mutated from the network queue.
             let link = self.links[peer]
             self.lock.unlock()
 
             guard !usable || silent else {
+                // Leave a trail. A reclaim that turns out to be wrong is only
+                // diagnosable if the run-up to it was recorded, and the last time this
+                // fired there was nothing in the log but the reclaim itself.
+                if answersHeartbeats, let last = lastReply {
+                    let quietFor = Date().timeIntervalSince(last)
+                    if quietFor > 4 {
+                        Self.debugLog(String(format: "peer %@ has not answered for %.1fs",
+                                             self.names[peer] ?? peer, quietFor))
+                    }
+                }
                 link?.send(.heartbeat, Data([Self.heartbeatRequest]))
                 return
             }
 
-            let why = silent ? " (stopped answering)" : ""
+            let why = silent
+                ? " (no heartbeat or traffic for \(Self.heartbeatDeadline)s)"
+                : " (link gone: haveLink=\(!usable))"
             Self.debugLog("control was stuck on \(self.names[peer] ?? peer)\(why); taking it back")
             capture.returnControlLocally()
             self.activeLink = nil

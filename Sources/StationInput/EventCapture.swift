@@ -127,13 +127,38 @@ public final class EventCapture: @unchecked Sendable {
 
     /// Hand control back to this Mac, e.g. because the peer disconnected or the user
     /// pressed the escape hotkey. Must be safe to call when already local.
+    ///
+    /// The pointer is deliberately pulled in off the edge rather than left where it was
+    /// parked. `parkedCursor` is by definition the point where control crossed, which
+    /// sits in the one-pixel band the edge detector watches: restoring the pointer
+    /// there means the user's very next movement in the same direction crosses again.
+    /// When control was taken back because the peer is unusable, that produces a
+    /// pointer that repeatedly vanishes and returns, which reads as a stuck cursor
+    /// rather than as a peer problem.
     public func returnControlLocally() {
         guard case .forwarding = mode else { return }
         releaseCursor()
+        nudgeInsideEdges()
         remoteCursor = nil
         mode = .local
         onEscapeHatch?()
     }
+
+    /// Move the pointer just inside every edge it is currently sitting on.
+    private func nudgeInsideEdges() {
+        let margin = Self.returnMarginPixels
+        let p = ScreenGeometry.currentCursor
+        let x = min(max(p.x, localBounds.minX + margin), localBounds.maxX - 1 - margin)
+        let y = min(max(p.y, localBounds.minY + margin), localBounds.maxY - 1 - margin)
+        guard x != p.x || y != p.y else { return }
+        CGWarpMouseCursorPosition(CGPoint(x: x, y: y))
+        // The warp opens a local-events suppression interval; end it immediately.
+        CGAssociateMouseAndMouseCursorPosition(1)
+    }
+
+    /// Comfortably wider than the detector's one-pixel band, so a hand still moving
+    /// toward the edge does not instantly re-cross.
+    private static let returnMarginPixels: Double = 20
 
     /// Fired when the user forces control back with the escape hatch.
     public var onEscapeHatch: (@Sendable () -> Void)?
