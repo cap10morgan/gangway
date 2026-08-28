@@ -30,6 +30,11 @@ public final class EventCapture: @unchecked Sendable {
 
     public private(set) var mode: Mode = .local
 
+    /// When a key last actually reached this tap. Positive proof that the keyboard is
+    /// not being withheld from us, which is the only reliable way to tell a real
+    /// Secure Event Input block from the flag merely being set.
+    public private(set) var lastKeyDownAtTap: Date?
+
     /// Raw event ready to send. The `Data` is an opaque `CGEvent` serialization.
     public var onEvent: (@Sendable (InputEvent) -> Void)?
     /// Control just moved to a peer; the peer should place its cursor at this point.
@@ -180,6 +185,8 @@ public final class EventCapture: @unchecked Sendable {
         if event.getIntegerValueField(.eventSourceUserData) == stationEventMarker {
             return Unmanaged.passUnretained(event)
         }
+
+        if type == .keyDown { lastKeyDownAtTap = Date() }
 
         switch mode {
         case .local:

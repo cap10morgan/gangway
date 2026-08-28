@@ -1,6 +1,7 @@
 import Foundation
 import Carbon
 import AppKit
+import CoreGraphics
 
 /// Secure Event Input, which any application can turn on.
 ///
@@ -28,6 +29,44 @@ public enum SecureInput {
         guard isEnabled else { return nil }
         return NSWorkspace.shared.frontmostApplication?.localizedName
     }
+
+    /// Whether secure input appears to be *actually* withholding keystrokes from our
+    /// tap, as opposed to merely being switched on somewhere.
+    ///
+    /// `IsSecureEventInputEnabled()` on its own is not evidence of a problem. It was
+    /// shipped as if it were, and produced a floating panel saying keystrokes were not
+    /// arriving while they were arriving perfectly well. The flag reports that some
+    /// application in the session has asked for secure input; whether that actually
+    /// stops *this* tap from seeing keys is a separate question, and the answer is
+    /// observably sometimes no.
+    ///
+    /// So corroborate it. The system keeps a timestamp of the last keyboard event at
+    /// the HID layer, which is a counter rather than a delivery, so asking for it does
+    /// not require the event to have reached us. If the system says a key went down a
+    /// moment ago and our tap has not seen one in far longer, keystrokes are going
+    /// somewhere we cannot see. That is the symptom worth reporting; the flag is not.
+    ///
+    /// Deliberately biased towards silence. If the counter turns out to be suppressed
+    /// too, `sinceSystemKeyDown` stays large and this simply never fires -- which is
+    /// where things stood before the warning existed, and better than a panel that
+    /// lies. A detector that has not been proven must fail quiet.
+    public static func appearsToBlockKeyboard(lastKeyDownAtTap: Date?) -> Bool {
+        guard isEnabled else { return false }
+
+        let sinceSystemKeyDown = CGEventSource.secondsSinceLastEventType(
+            .hidSystemState, eventType: .keyDown)
+        // Nobody is typing, so there is nothing to be missing.
+        guard sinceSystemKeyDown < Self.typingWindow else { return false }
+
+        guard let lastKeyDownAtTap else { return true }
+        // A margin so ordinary scheduling jitter between the two clocks cannot look
+        // like a swallowed keystroke.
+        return Date().timeIntervalSince(lastKeyDownAtTap) > sinceSystemKeyDown + 1
+    }
+
+    /// How recently the system must have seen a keystroke for its absence at our tap to
+    /// mean anything.
+    private static let typingWindow: TimeInterval = 3
 
     /// The same list, trimmed for a panel the user reads while their keyboard is
     /// half-broken. Ordered by how likely it is to be the answer, and phrased as

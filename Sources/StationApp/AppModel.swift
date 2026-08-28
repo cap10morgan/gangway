@@ -62,7 +62,12 @@ final class AppModel {
     /// Shown while receiving so the connection can be tested directly with
     /// `stationctl connect` when discovery is the thing that is broken.
     var listeningPort: UInt16?
+    /// This Mac has handed its pointer to a peer.
     var controlIsRemote = false
+    /// A peer is driving this Mac. The opposite situation, and not the same field:
+    /// conflating them told the machine being controlled that it had given control
+    /// away, which inverted its status text and misdirected keyboard warnings.
+    var isBeingControlled = false
     var statusMessage = "Not running"
     var lastError: String?
     /// Recent session events, newest first. Not shown in the menu; kept because
@@ -296,8 +301,11 @@ final class AppModel {
         pendingApproval = nil
         awaitingApproval = nil
         codePanel.hide()
+        isBeingControlled = false
         keyboardBlockedBy = nil
         secureInputPanel.hide()
+        secureInputVerifier?.invalidate()
+        secureInputVerifier = nil
         listeningPort = nil
         statusMessage = "Not running"
     }
@@ -419,7 +427,34 @@ final class AppModel {
     private func showSecureInputWarningIfNeeded() {
         guard controlIsRemote, let block = keyboardBlockedBy else { return }
         secureInputPanel.show(peer: connectedPeer, holder: block.holder)
+        startSecureInputVerification()
     }
+
+    /// Keep checking for as long as the warning is up, and take it down the moment the
+    /// condition stops being true.
+    ///
+    /// The session only reports secure input while it is forwarding, so every route out
+    /// of forwarding has to remember to dismiss this -- and a warning that outlives the
+    /// problem is worse than no warning, because it teaches the user that the warning
+    /// means nothing. Rather than trusting each of those paths, the panel verifies its
+    /// own reason for existing.
+    private func startSecureInputVerification() {
+        guard secureInputVerifier == nil else { return }
+        secureInputVerifier = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.controlIsRemote, SecureInput.isEnabled else {
+                    self.keyboardBlockedBy = nil
+                    self.secureInputPanel.hide()
+                    self.secureInputVerifier?.invalidate()
+                    self.secureInputVerifier = nil
+                    return
+                }
+            }
+        }
+    }
+
+    private var secureInputVerifier: Timer?
 
     private func record(_ text: String) {
         let stamp = Date().formatted(date: .omitted, time: .standard)
@@ -475,6 +510,7 @@ final class AppModel {
             secureInputPanel.hide()
             connectedPeer = nil
             controlIsRemote = false
+            isBeingControlled = false
             statusMessage = reason.map { "\(name): \($0)" } ?? "\(name) disconnected"
         case .controlMoved(let remote, let peer):
             controlIsRemote = remote
@@ -485,6 +521,11 @@ final class AppModel {
             // nothing -- and would do it at the exact moment the user went to a
             // password prompt.
             remote ? showSecureInputWarningIfNeeded() : secureInputPanel.hide()
+        case .beingControlled(let active, let peer):
+            isBeingControlled = active
+            statusMessage = active
+                ? "\(peer ?? "Another Mac") is controlling this one"
+                : "Control is here"
         case .clipboardSynced(let sent, let bytes):
             let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
             lastClipboardActivity = sent ? "Clipboard sent (\(size))" : "Clipboard received (\(size))"
@@ -511,6 +552,8 @@ final class AppModel {
         case .keyboardUnblocked:            return "secure input released"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
+        case .beingControlled(let on, _):   return on ? "a peer is driving this Mac"
+                                                      : "peer stopped driving this Mac"
         case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"
         case .clipboardSkipped(let r):      return "clipboard skipped: \(r)"
         case .failed(let m):                return "FAILED: \(m)"

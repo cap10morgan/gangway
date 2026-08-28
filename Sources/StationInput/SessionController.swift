@@ -36,8 +36,16 @@ public final class SessionController: @unchecked Sendable {
         /// Secure Event Input was released and keystrokes forward again.
         case keyboardUnblocked
         case peerDisconnected(name: String, reason: String?)
-        /// Control moved to a peer, or came back here.
+        /// Control moved to a peer, or came back here. Only ever emitted by the Mac
+        /// that owns the physical keyboard and mouse.
         case controlMoved(remote: Bool, peer: String?)
+        /// A peer's pointer arrived on this Mac, or left it again. The mirror image of
+        /// `controlMoved`, and deliberately a separate case: the receiving Mac used to
+        /// emit `controlMoved(remote: true)` for this, which reads as "control left
+        /// here" and is the exact opposite of what happened. That put "Control is on
+        /// <peer>" in the menu of the Mac being driven, and aimed a keyboard-capture
+        /// warning at the one machine that captures nothing.
+        case beingControlled(Bool, peer: String?)
         case failed(String)
         case clipboardSynced(sent: Bool, bytes: Int)
         case clipboardSkipped(String)
@@ -520,11 +528,11 @@ public final class SessionController: @unchecked Sendable {
         case .enterScreen:
             guard let msg = EnterScreen.decode(payload) else { return }
             injection.enter(at: NormalizedPoint(x: msg.normalizedX, y: msg.normalizedY))
-            onEvent?(.controlMoved(remote: true, peer: peer.flatMap { names[$0] }))
+            onEvent?(.beingControlled(true, peer: peer.flatMap { names[$0] }))
 
         case .leaveScreen:
             injection.leave()
-            onEvent?(.controlMoved(remote: false, peer: nil))
+            onEvent?(.beingControlled(false, peer: nil))
 
         case .input:
             guard let event = InputEvent.decode(payload) else { return }
@@ -742,7 +750,12 @@ public final class SessionController: @unchecked Sendable {
         if throttled, now.timeIntervalSince(lastSecureInputCheck) < 2 { return }
         lastSecureInputCheck = now
 
-        let blocked = SecureInput.isEnabled
+        // Corroborated, not just the flag. See SecureInput.appearsToBlockKeyboard: the
+        // flag being set does not mean our tap has stopped receiving keys, and warning
+        // on it alone produced a panel insisting keystrokes were lost while the user
+        // was watching them arrive.
+        let blocked = SecureInput.appearsToBlockKeyboard(
+            lastKeyDownAtTap: capture?.lastKeyDownAtTap)
         let changed = blocked != secureInputBlocked
         secureInputBlocked = blocked
         guard changed || (announceIfBlocked && blocked) else { return }
