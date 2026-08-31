@@ -110,3 +110,76 @@ struct SecureInputWarningView: View {
         .frame(width: 380, alignment: .leading)
     }
 }
+
+/// A small floating notice for a problem the user can only act on with the keyboard.
+///
+/// Congestion is reported here rather than acted on. Station could take the pointer
+/// back automatically when a peer falls behind, and an earlier version of that idea --
+/// reclaiming control from a peer judged unresponsive -- turned out to fire against
+/// peers that were perfectly healthy, snatching the pointer mid-gesture. The pointer
+/// belongs to the user. Telling them what is happening, and which key ends it, leaves
+/// the decision where it belongs.
+///
+/// It has no buttons for the same reason the secure input panel has none: while this is
+/// on screen the pointer is on the other Mac, so nothing here can be clicked.
+@MainActor
+final class PeerLagPanel {
+
+    private var window: NSPanel?
+
+    func show(peer: String) {
+        let view = PeerLagView(peer: peer)
+        if let window {
+            (window.contentViewController as? NSHostingController<PeerLagView>)?.rootView = view
+            window.orderFrontRegardless()
+            return
+        }
+
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 130),
+                            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.contentViewController = NSHostingController(rootView: view)
+
+        if let screen = NSScreen.main {
+            let frame = screen.visibleFrame
+            panel.setFrameOrigin(CGPoint(x: frame.midX - 170, y: frame.minY + 80))
+        }
+        panel.orderFrontRegardless()
+        window = panel
+    }
+
+    func hide() { window?.orderOut(nil) }
+}
+
+struct PeerLagView: View {
+    let peer: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label {
+                Text("\(peer) is running behind").font(.headline)
+            } icon: {
+                Image(systemName: "tortoise").foregroundStyle(.orange)
+            }
+
+            Text("It can't keep up with the pointer, so what you do here is arriving "
+                 + "there late.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Press ⌃⌥⎋ to bring control back to this Mac.")
+                .font(.callout)
+        }
+        .padding(20)
+        .frame(width: 340, alignment: .leading)
+    }
+}

@@ -283,11 +283,44 @@ public final class StationLink: @unchecked Sendable {
     }
 
     private func sendRaw(_ type: MessageType, _ payload: Data) {
+        // Its own lock, deliberately. `sendRaw` is called from `send` with `lock`
+        // already held, and NSLock is not recursive: reusing it here deadlocks every
+        // send instantly. Network.framework may also invoke the completion
+        // synchronously, which would re-enter from the other direction.
+        inFlightLock.lock()
+        inFlight += 1
+        inFlightLock.unlock()
         connection.send(content: Framing.frame(type, payload),
                         completion: .contentProcessed { [weak self] error in
-            if let error { self?.onError?(error) }
+            guard let self else { return }
+            self.inFlightLock.lock()
+            self.inFlight -= 1
+            self.inFlightLock.unlock()
+            if let error { self.onError?(error) }
         })
     }
+
+    /// Frames handed to the transport that it has not finished writing.
+    ///
+    /// This is the only honest measure of whether the far end is keeping up. The
+    /// receiving Mac injects each event synchronously before reading again, so a peer
+    /// that cannot inject as fast as we send stops draining its socket, TCP backpressure
+    /// reaches us, and these completions stop firing. Without watching it, Station will
+    /// happily queue an unbounded backlog: the pointer over there falls seconds behind,
+    /// which the user experiences not as lag but as the cursor having vanished.
+    private var inFlight = 0
+    private let inFlightLock = NSLock()
+
+    /// Whether the far end is failing to keep up with what we are sending.
+    public var isCongested: Bool {
+        inFlightLock.lock(); defer { inFlightLock.unlock() }
+        return inFlight > Self.congestionThreshold
+    }
+
+    /// Roughly a tenth of a second of pointer motion. High enough that ordinary
+    /// scheduling jitter does not trip it, low enough that the backlog stays within
+    /// what a person perceives as immediate.
+    private static let congestionThreshold = 24
 
     // MARK: - Receiving
 

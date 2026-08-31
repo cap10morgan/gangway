@@ -77,6 +77,7 @@ final class AppModel {
     private var session: SessionController?
     private let codePanel = PairingCodePanel()
     private let secureInputPanel = SecureInputPanel()
+    private let peerLagPanel = PeerLagPanel()
     private let browser = PeerBrowser()
     private let deviceName = Host.current().localizedName ?? "Mac"
 
@@ -304,6 +305,7 @@ final class AppModel {
         isBeingControlled = false
         keyboardBlockedBy = nil
         secureInputPanel.hide()
+        peerLagPanel.hide()
         secureInputVerifier?.invalidate()
         secureInputVerifier = nil
         listeningPort = nil
@@ -485,6 +487,8 @@ final class AppModel {
             statusMessage = "Paired with \(name)"
         case .peerRenamed(let peer, let name):
             renamePlacement(peer, to: name)
+        case .peerFallingBehind(let name, let behind):
+            behind ? peerLagPanel.show(peer: name) : peerLagPanel.hide()
         case .keyboardUnblocked:
             keyboardBlockedBy = nil
             secureInputPanel.hide()
@@ -508,6 +512,7 @@ final class AppModel {
         case .peerDisconnected(let name, let reason):
             codePanel.hide()
             secureInputPanel.hide()
+            peerLagPanel.hide()
             connectedPeer = nil
             controlIsRemote = false
             isBeingControlled = false
@@ -547,6 +552,8 @@ final class AppModel {
         case .peerConnected(let n):         return "connected to \(n)"
         case .peerRenamed(_, let n):        return "peer is named \(n)"
         case .layoutChanged:                return "arrangement updated by another Mac"
+        case .peerFallingBehind(let n, let b): return b ? "\(n) is falling behind"
+                                                         : "peer is keeping up again"
         case .keyboardBlocked(let h):       return "keyboard blocked by secure input"
                                             + (h.map { " (maybe \($0))" } ?? "")
         case .keyboardUnblocked:            return "secure input released"

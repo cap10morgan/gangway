@@ -137,6 +137,9 @@ case "run":
             log("station", "arrangement updated by another Mac (\(incoming.placements.count) Macs)")
         case .peerDisconnected(let name, let reason):
             log("station", "\(name) disconnected\(reason.map { ": \($0)" } ?? "")")
+        case .peerFallingBehind(let name, let behind):
+            log("station", behind ? "\(name) is falling behind; ctrl-opt-esc returns control"
+                                  : "peer is keeping up again")
         case .beingControlled(let active, let peer):
             log("station", active ? "\(peer ?? "a peer") is controlling this Mac"
                                   : "peer released control of this Mac")

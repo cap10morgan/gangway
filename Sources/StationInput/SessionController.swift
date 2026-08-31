@@ -30,6 +30,10 @@ public final class SessionController: @unchecked Sendable {
         case peerRenamed(peer: DeviceID, name: String)
         /// A newer arrangement arrived from another Mac.
         case layoutChanged(ScreenLayoutGrid)
+        /// The peer cannot keep up with what is being sent to it, so the pointer there
+        /// is running behind. Reported rather than acted on: the pointer belongs to the
+        /// user, and taking it back on a guess has gone badly enough already.
+        case peerFallingBehind(name: String, behind: Bool)
         /// Another app has Secure Event Input on, so keystrokes cannot be forwarded.
         /// `holder` is a guess at which app it is, and may be nil; macOS does not say.
         case keyboardBlocked(holder: String?)
@@ -106,6 +110,15 @@ public final class SessionController: @unchecked Sendable {
     /// a new version of Station must not decide that an old one is dead.
     private var speaksHeartbeat: Set<DeviceID> = []
 
+    /// How long the send backlog must stay full before the user is told. Long enough
+    /// that a momentary stall during a heavy gesture is not worth mentioning.
+    private static let congestionGrace: TimeInterval = 3
+    nonisolated(unsafe) private var congestedSince: Date?
+    nonisolated(unsafe) private var peerIsBehind = false
+
+    /// `CGEventType.mouseMoved`. The only event Station will discard.
+    private static let mouseMovedType: UInt32 = 5
+
     private static let heartbeatRequest: UInt8 = 0
     private static let heartbeatReply: UInt8 = 1
     /// Deliberately long, because the two failure modes are not symmetric.
@@ -173,6 +186,27 @@ public final class SessionController: @unchecked Sendable {
         }
     }
 
+    nonisolated(unsafe) private static var droppedCount = 0
+    nonisolated(unsafe) private static var injectTotalNanos: UInt64 = 0
+    nonisolated(unsafe) private static var injectPeakNanos: UInt64 = 0
+    nonisolated(unsafe) private static var injectSamples = 0
+
+    private static func note(injectionNanos: UInt64) {
+        countsLock.lock()
+        injectTotalNanos += injectionNanos
+        injectPeakNanos = max(injectPeakNanos, injectionNanos)
+        injectSamples += 1
+        countsLock.unlock()
+    }
+
+    /// Counted, not logged per event: shedding happens at pointer rates by definition.
+    private static func note(dropped: Bool) {
+        guard debugEvents else { return }
+        countsLock.lock()
+        droppedCount += 1
+        countsLock.unlock()
+    }
+
     private static func note(sent: UInt32?, received: UInt32?) {
         // Checked before taking the lock so this costs nothing when logging is off,
         // which is the case that runs on the input hot path.
@@ -188,8 +222,16 @@ public final class SessionController: @unchecked Sendable {
         lastReport = Date()
         let sentSnapshot = sentCounts
         let recvSnapshot = recvCounts
+        let dropped = droppedCount
+        let injectTotal = injectTotalNanos
+        let injectPeak = injectPeakNanos
+        let injectN = injectSamples
         sentCounts.removeAll()
         recvCounts.removeAll()
+        droppedCount = 0
+        injectTotalNanos = 0
+        injectPeakNanos = 0
+        injectSamples = 0
         countsLock.unlock()
 
         func render(_ counts: [UInt32: Int]) -> String {
@@ -197,7 +239,13 @@ public final class SessionController: @unchecked Sendable {
                 .map { "\(typeName($0.key))=\($0.value)" }.joined(separator: " ")
         }
         // Writing to disk outside the lock, and off the thread that delivered the event.
-        let line = "sent: \(render(sentSnapshot))  received: \(render(recvSnapshot))"
+        var line = "sent: \(render(sentSnapshot))  received: \(render(recvSnapshot))"
+        if dropped > 0 { line += "  shed: \(dropped) moves (peer behind)" }
+        if injectN > 0 {
+            let meanMs = Double(injectTotal) / Double(injectN) / 1_000_000
+            let peakMs = Double(injectPeak) / 1_000_000
+            line += String(format: "  inject: mean %.2fms peak %.2fms", meanMs, peakMs)
+        }
         DispatchQueue.global(qos: .utility).async { debugLog(line) }
     }
 
@@ -537,7 +585,16 @@ public final class SessionController: @unchecked Sendable {
         case .input:
             guard let event = InputEvent.decode(payload) else { return }
             Self.note(sent: nil, received: event.eventType)
-            if !injection.inject(event) {
+            // Timed because injection is the suspected bottleneck and, until now, that
+            // was only ever a theory. This runs synchronously before the next frame is
+            // read, so whatever it costs is exactly the rate limit of the whole link.
+            let started = Self.debugEvents ? DispatchTime.now().uptimeNanoseconds : 0
+            let ok = injection.inject(event)
+            if Self.debugEvents {
+                let elapsed = DispatchTime.now().uptimeNanoseconds - started
+                Self.note(injectionNanos: elapsed)
+            }
+            if !ok {
                 Self.debugLog("could not rehydrate type \(event.eventType)")
             }
 
@@ -593,7 +650,26 @@ public final class SessionController: @unchecked Sendable {
             if event.eventType == 10 || event.eventType == 11 {
                 self.checkSecureInput()
             }
-            self.activeLink?.send(.input, event.encode())
+            guard let link = self.activeLink else { return }
+
+            // Shed pointer motion when the peer cannot keep up.
+            //
+            // The receiving Mac injects each event synchronously before reading the
+            // next, so sending faster than it can inject builds a backlog that nothing
+            // drains. That does not degrade gracefully: the pointer over there falls
+            // seconds behind and the user reads it as the cursor having disappeared,
+            // not as lag. Better to arrive late-but-current than complete-but-stale.
+            //
+            // Only plain motion is dropped, and dropping it is lossless in the way that
+            // matters: every event carries an absolute normalized position, so the very
+            // next one to get through restores the pointer exactly. Nothing else is
+            // ever shed -- a missing key, click, or gesture event changes meaning,
+            // while a missing intermediate move changes only smoothness.
+            if event.eventType == Self.mouseMovedType, link.isCongested {
+                Self.note(dropped: true)
+                return
+            }
+            link.send(.input, event.encode())
         }
         capture.onEnterPeer = { [weak self] peer, at in
             guard let self else { return }
@@ -614,12 +690,14 @@ public final class SessionController: @unchecked Sendable {
         }
         capture.onReturnLocal = { [weak self] _, _ in
             guard let self else { return }
+            self.clearCongestion()
             self.activeLink = nil
             self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
             self.onEvent?(.controlMoved(remote: false, peer: nil))
         }
         capture.onEscapeHatch = { [weak self] in
             guard let self else { return }
+            self.clearCongestion()
             self.activeLink = nil
             self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
             self.onEvent?(.controlMoved(remote: false, peer: nil))
@@ -712,6 +790,27 @@ public final class SessionController: @unchecked Sendable {
             let link = self.links[peer]
             self.lock.unlock()
 
+            // Congestion is measured, not inferred: it is the count of frames the
+            // transport has not finished writing. Sustained congestion means the peer
+            // has stopped draining its socket because it cannot inject fast enough.
+            let congested = link?.isCongested ?? false
+            let wasBehind = self.peerIsBehind
+            if congested {
+                if self.congestedSince == nil { self.congestedSince = Date() }
+            } else {
+                self.congestedSince = nil
+            }
+            let behind = self.congestedSince.map {
+                Date().timeIntervalSince($0) > Self.congestionGrace
+            } ?? false
+            if behind != wasBehind {
+                self.peerIsBehind = behind
+                Self.debugLog("peer \(self.names[peer] ?? peer) is "
+                            + (behind ? "falling behind" : "keeping up again"))
+                self.onEvent?(.peerFallingBehind(name: self.names[peer] ?? "The other Mac",
+                                                 behind: behind))
+            }
+
             guard !usable || silent else {
                 // Leave a trail. A reclaim that turns out to be wrong is only
                 // diagnosable if the run-up to it was recorded, and the last time this
@@ -735,6 +834,14 @@ public final class SessionController: @unchecked Sendable {
             self.activeLink = nil
             self.onEvent?(.controlMoved(remote: false, peer: nil))
         }
+    }
+
+    /// Forget congestion state, so a notice cannot outlive the session it described.
+    private func clearCongestion() {
+        congestedSince = nil
+        guard peerIsBehind else { return }
+        peerIsBehind = false
+        onEvent?(.peerFallingBehind(name: "", behind: false))
     }
 
     /// Report Secure Event Input when it changes, in either direction.
