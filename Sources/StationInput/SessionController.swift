@@ -94,6 +94,7 @@ public final class SessionController: @unchecked Sendable {
     nonisolated(unsafe) private var lastSecureInputCheck = Date.distantPast
     /// Guards against control being stuck on a peer that is no longer usable.
     private var forwardingWatchdog: Timer?
+    private var redialTimer: Timer?
     /// When each peer last proved it was still running Station, as opposed to still
     /// holding an open socket. Only meaningful while forwarding to that peer.
     private var lastHeartbeatReply: [DeviceID: Date] = [:]
@@ -289,9 +290,24 @@ public final class SessionController: @unchecked Sendable {
             return
         }
         startCapture()
+
+        // Reconnecting must not depend on someone else raising an event; see
+        // `redialKnownPeers`. Cheap: it does nothing at all unless a paired Mac we know
+        // an address for has no link.
+        redialTimer?.invalidate()
+        redialTimer = Timer.scheduledTimer(withTimeInterval: Self.redialInterval,
+                                           repeats: true) { [weak self] _ in
+            self?.redialKnownPeers()
+        }
     }
 
+    /// Slow enough to be invisible when everything is fine, quick enough that a dropped
+    /// link heals before it is worth complaining about.
+    private static let redialInterval: TimeInterval = 3
+
     public func stop() {
+        redialTimer?.invalidate()
+        redialTimer = nil
         forwardingWatchdog?.invalidate()
         forwardingWatchdog = nil
         clipboard.stop()
@@ -336,12 +352,28 @@ public final class SessionController: @unchecked Sendable {
             endpoints[id] = peer.endpoint
             names[id] = peer.name
         }
+        lock.unlock()
+        redialKnownPeers()
+    }
+
+    /// Dial every paired Mac we know an address for and have no link to.
+    ///
+    /// Called both when Bonjour reports a change and on a timer, and the timer is the
+    /// important one. Discovery only fires when the browse *results* change, so a link
+    /// that dies while the peer keeps advertising -- a network blip, a peer process
+    /// that restarts inside the record's lifetime, a record held up by a sleep proxy --
+    /// produced no callback at all. Station would sit with a cached endpoint and no
+    /// link and never dial it, which is why the fix that worked was sleeping both Macs:
+    /// that churns the Bonjour record and re-fires the browse. Reconnecting is idle
+    /// work, so it should not need an external event to notice it is owed.
+    private func redialKnownPeers() {
+        lock.lock()
         let targets = endpoints.keys.filter { links[$0] == nil && shouldInitiate(to: $0) }
         lock.unlock()
+        guard !targets.isEmpty else { return }
 
-        // Reconnect to Macs already paired with. A peer that has never been paired is
-        // left alone: dialling it would put an unexpected Touch ID prompt on someone
-        // else's screen.
+        // A peer that has never been paired is left alone: dialling it would put an
+        // unexpected Touch ID prompt on someone else's screen.
         let known = Set(PairingStore.peers().map(\.id))
         for id in targets where known.contains(id) {
             connect(to: id)
@@ -433,7 +465,8 @@ public final class SessionController: @unchecked Sendable {
                     // approve prompts without reading them.
                     link.confirmPairing()
                     link.announceApproval()
-                    self.onEvent?(.peerConnected(name: name))
+                    Self.debugLog("peer \(name) connected")
+                self.onEvent?(.peerConnected(name: name))
                 } else {
                     self.onEvent?(.approvalRequested(peer: id, name: name, code: code))
                 }
@@ -446,6 +479,7 @@ public final class SessionController: @unchecked Sendable {
                 // Offer ours; whichever copy is newer wins, so a Mac that has been
                 // away comes back into step without anyone rearranging anything.
                 try? link.send(.layout, json: self.grid)
+                Self.debugLog("peer \(name) connected")
                 self.onEvent?(.peerConnected(name: name))
             case .failed(let reason):
                 self.drop(link, id: peerID, reason: reason)
@@ -490,6 +524,8 @@ public final class SessionController: @unchecked Sendable {
             }
             onEvent?(.controlMoved(remote: false, peer: nil))
         }
+        Self.debugLog("peer \(name) disconnected\(reason.map { ": \($0)" } ?? "")"
+                    + (wasActive ? " while it held control" : ""))
         onEvent?(.peerDisconnected(name: name, reason: reason))
     }
 
