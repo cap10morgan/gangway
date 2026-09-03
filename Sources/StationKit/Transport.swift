@@ -41,11 +41,20 @@ enum TransportParameters {
 
         if !isSimple {
             tcp.enableKeepalive = true
-            // Detect a dead peer in roughly 20s. The previous 2/1/3 dropped healthy
-            // connections whenever a Wi-Fi link went briefly into power saving.
-            tcp.keepaliveIdle = 10
-            tcp.keepaliveCount = 3
-            tcp.keepaliveInterval = 3
+            // Tolerate roughly 90s of silence before TCP gives up.
+            //
+            // These values have now been relaxed twice for the same reason, so the
+            // reasoning is worth stating plainly: TCP keepalive must NOT be the thing
+            // that decides a peer is gone. A Mac that dozes for twenty seconds is
+            // healthy, and 10/3/3 tore the link down every time one did -- 49 timeouts
+            // in a single night, each followed by a successful reconnect a second or
+            // two later, which is the signature of killing a connection that was fine.
+            // Liveness is the application heartbeat's job (see SessionController): it
+            // can tell a napping peer from a departed one, and keepalive cannot.
+            tcp.keepaliveIdle = 30
+            tcp.keepaliveCount = 6
+            tcp.keepaliveInterval = 10
+            // Only bounds the initial handshake, not an established link.
             tcp.connectionTimeout = 10
         }
 

@@ -95,8 +95,18 @@ public final class SessionController: @unchecked Sendable {
     /// Guards against control being stuck on a peer that is no longer usable.
     private var forwardingWatchdog: Timer?
     private var redialTimer: Timer?
+    private var heartbeatTimer: Timer?
+    /// When a dial to each peer was last started, so a 3s sweep cannot stack half-open
+    /// connections on top of one that is still trying. `connect(to:)` only refuses when
+    /// a link is already *established*, so without this the sweep opened a fresh
+    /// `StationLink` every tick for as long as a dial took to fail.
+    private var lastDialAt: [DeviceID: Date] = [:]
+    /// When each peer's link was lost, so the Mac that loses the dial tie-break can
+    /// still heal a link the other one is not healing.
+    private var linkLostAt: [DeviceID: Date] = [:]
     /// When each peer last proved it was still running Station, as opposed to still
-    /// holding an open socket. Only meaningful while forwarding to that peer.
+    /// holding an open socket. Maintained for every established link, not only the one
+    /// being forwarded to; see the heartbeat timer in `start`.
     private var lastHeartbeatReply: [DeviceID: Date] = [:]
     /// When anything at all last arrived from a peer. Any frame proves Station is alive
     /// there, so this is broader evidence than a heartbeat reply and costs nothing.
@@ -299,7 +309,35 @@ public final class SessionController: @unchecked Sendable {
                                            repeats: true) { [weak self] _ in
             self?.redialKnownPeers()
         }
+
+        // Heartbeats used to be sent only from the forwarding watchdog, which runs only
+        // while this Mac is actually driving another one. Two consequences, both bad.
+        // An idle link exchanged nothing at all, so it was TCP keepalive alone that
+        // decided whether the peer still existed -- the one job it is unfit for. And
+        // `speaksHeartbeat` could only ever be populated during forwarding, so the
+        // watchdog's own liveness check was usually disarmed at the moment it was
+        // needed, having never seen the peer answer. Liveness is a property of the
+        // link, not of what the link happens to be carrying.
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval,
+                                              repeats: true) { [weak self] _ in
+            self?.pingPeers()
+        }
     }
+
+    /// Ask every established peer to prove Station is still running there.
+    private func pingPeers() {
+        lock.lock()
+        let live = ready.compactMap { links[$0] }
+        lock.unlock()
+        for link in live {
+            link.send(.heartbeat, Data([Self.heartbeatRequest]))
+        }
+    }
+
+    /// Frequent enough to keep an idle link warm and to notice a peer going away
+    /// well inside `heartbeatDeadline`.
+    private static let heartbeatInterval: TimeInterval = 5
 
     /// Slow enough to be invisible when everything is fine, quick enough that a dropped
     /// link heals before it is worth complaining about.
@@ -308,6 +346,8 @@ public final class SessionController: @unchecked Sendable {
     public func stop() {
         redialTimer?.invalidate()
         redialTimer = nil
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
         forwardingWatchdog?.invalidate()
         forwardingWatchdog = nil
         clipboard.stop()
@@ -368,7 +408,25 @@ public final class SessionController: @unchecked Sendable {
     /// work, so it should not need an external event to notice it is owed.
     private func redialKnownPeers() {
         lock.lock()
-        let targets = endpoints.keys.filter { links[$0] == nil && shouldInitiate(to: $0) }
+        let now = Date()
+        let targets = endpoints.keys.filter { peer in
+            guard links[peer] == nil else { return false }
+            // One dial at a time. A dial can take `connectionTimeout` to fail, which is
+            // several sweeps' worth.
+            if let last = lastDialAt[peer], now.timeIntervalSince(last) < Self.dialCooldown {
+                return false
+            }
+            // The tie-break stops both Macs dialling at once on a healthy start-up, but
+            // as a *recovery* gate it meant only one of the two could ever repair a
+            // link -- and if that one was the Mac having the problem, nothing repaired
+            // it. So the loser dials too, just later: long enough that the winner's
+            // attempt normally lands first, short enough to still be a recovery.
+            if shouldInitiate(to: peer) { return true }
+            return linkLostAt[peer].map {
+                now.timeIntervalSince($0) > Self.opposingRedialDelay
+            } ?? false
+        }
+        for peer in targets { lastDialAt[peer] = now }
         lock.unlock()
         guard !targets.isEmpty else { return }
 
@@ -385,6 +443,9 @@ public final class SessionController: @unchecked Sendable {
     private func shouldInitiate(to peer: DeviceID) -> Bool {
         localDeviceID < peer
     }
+
+    private static let dialCooldown: TimeInterval = 12
+    private static let opposingRedialDelay: TimeInterval = 15
 
     /// Dial a Mac we have not paired with yet, identified only by the fingerprint it
     /// advertises. Its full identity is learned during the handshake.
@@ -510,6 +571,7 @@ public final class SessionController: @unchecked Sendable {
             lastInbound.removeValue(forKey: id)
             speaksHeartbeat.remove(id)
             if heldCrossing?.peer == id { heldCrossing = nil }
+            linkLostAt[id] = Date()
         }
         let name = id.flatMap { names[$0] } ?? "a Mac"
         lock.unlock()
