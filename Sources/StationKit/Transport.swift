@@ -673,8 +673,47 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         if !moreComing { publish() }
     }
 
+    /// The address to dial, chosen from the resolved sockaddrs rather than left to
+    /// Network.framework.
+    ///
+    /// `service.hostName` is a UUID `.local.` name that mDNS resolves to several
+    /// addresses at once: the peer's IPv4, a link-local IPv6 scoped to `en0`, and a
+    /// unique-local IPv6 whose scope resolves to `<0>`. Dialling the *name* lets
+    /// Network.framework pick, and with `includePeerToPeer` enabled it picked a
+    /// peer-to-peer path over `ap1` that was down -- every dial failed instantly with
+    /// ENETDOWN, for forty consecutive attempts over half an hour, while `nc` to the
+    /// peer's IPv4 address on the same port succeeded every single time. Bonjour had
+    /// resolved the service perfectly; the address it handed back was simply not one
+    /// that could be reached, and nothing retried the others.
+    ///
+    /// Peer-to-peer stays enabled -- linking two Macs with no router between them is a
+    /// feature -- but the address is ours to choose, so choose one known to route.
+    private static func routableAddress(from service: NetService) -> String? {
+        var fallback: String?
+        for data in service.addresses ?? [] {
+            let host: String? = data.withUnsafeBytes { raw in
+                guard let sa = raw.baseAddress?.assumingMemoryBound(to: sockaddr.self)
+                else { return nil }
+                var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                guard getnameinfo(sa, socklen_t(data.count), &buffer,
+                                  socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0
+                else { return nil }
+                return String(cString: buffer)
+            }
+            guard let host, !host.isEmpty else { continue }
+            // A scoped address is only valid on the interface it names, and those are
+            // precisely the ones that were failing.
+            if host.hasPrefix("fe80") || host.contains("%") { continue }
+            // IPv4 on the LAN is the one path known to work here; take it and stop.
+            if !host.contains(":") { return host }
+            if fallback == nil { fallback = host }
+        }
+        return fallback
+    }
+
     public func netServiceDidResolveAddress(_ service: NetService) {
-        guard let host = service.hostName, service.port > 0 else { return }
+        let resolved = Self.routableAddress(from: service) ?? service.hostName
+        guard let host = resolved, service.port > 0 else { return }
         let txt = service.txtRecordData().map { NetService.dictionary(fromTXTRecord: $0) } ?? [:]
         func string(_ key: String) -> String? {
             txt[key].flatMap { String(data: $0, encoding: .utf8) }

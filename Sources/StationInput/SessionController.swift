@@ -501,9 +501,20 @@ public final class SessionController: @unchecked Sendable {
             peerID = id
             self.lock.lock()
             self.pending.removeValue(forKey: ObjectIdentifier(link))
-            self.links[id] = link
+            // Two Macs can dial each other at once -- more easily since both sides were
+            // allowed to redial -- and this used to overwrite the map entry, leaving the
+            // first link connected but unreferenced. Keep the established one and cancel
+            // the newcomer: if the incumbent is genuinely dead it will drop on its own
+            // and the sweep will dial a fresh one a moment later.
+            let duplicate = self.links[id] != nil && self.links[id] !== link
+            if !duplicate { self.links[id] = link }
             if let expectedName { self.names[id] = expectedName }
             self.lock.unlock()
+            if duplicate {
+                Self.debugLog("redundant link to \(self.names[id] ?? id) cancelled")
+                link.cancel()
+                return
+            }
             _ = known
         }
 
@@ -560,7 +571,14 @@ public final class SessionController: @unchecked Sendable {
         lock.lock()
         pending.removeValue(forKey: ObjectIdentifier(link))
         var wasActive = false
-        if let id {
+        // Only the link that is *currently* the peer's link may clear that peer's state.
+        // Without this check a stale duplicate dying tore down the live connection's
+        // bookkeeping -- removing it from `links` and `ready`, logging a disconnect, and
+        // prompting the sweep to dial yet another link -- while the real one carried on
+        // delivering input. The symptom is unmistakable once you know it: a disconnect
+        // in the log with no interruption whatsoever in the event stream around it.
+        let isCurrent = id.map { links[$0] === link } ?? false
+        if let id, isCurrent {
             if links[id] === activeLink {
                 activeLink = nil
                 wasActive = true
@@ -585,6 +603,10 @@ public final class SessionController: @unchecked Sendable {
                 self?.capture?.returnControlLocally()
             }
             onEvent?(.controlMoved(remote: false, peer: nil))
+        }
+        guard isCurrent || id == nil else {
+            Self.debugLog("stale link to \(name) closed; live link unaffected")
+            return
         }
         Self.debugLog("peer \(name) disconnected\(reason.map { ": \($0)" } ?? "")"
                     + (wasActive ? " while it held control" : ""))
