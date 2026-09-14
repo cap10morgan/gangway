@@ -444,6 +444,23 @@ public final class SessionController: @unchecked Sendable {
         localDeviceID < peer
     }
 
+    /// Which of two links to the same peer to keep, decided only from facts both Macs
+    /// agree on, so both ends always keep the same TCP connection.
+    ///
+    /// A link dialled by the lower-ID Mac -- the tie-break winner -- beats one dialled
+    /// by the other side. If the same Mac dialled both, the newer one wins: a Mac only
+    /// dials a peer it has no link to, so a second dial means it gave up on the first,
+    /// and the other end should follow rather than cling to a connection its peer has
+    /// already abandoned. Both dials come from one Mac and are at least `dialCooldown`
+    /// apart, so both ends see them in the same order.
+    static func keepsNewcomer(incumbentDialledByLowerID: Bool,
+                              newcomerDialledByLowerID: Bool) -> Bool {
+        if incumbentDialledByLowerID != newcomerDialledByLowerID {
+            return newcomerDialledByLowerID
+        }
+        return true
+    }
+
     private static let dialCooldown: TimeInterval = 12
     private static let opposingRedialDelay: TimeInterval = 15
 
@@ -501,19 +518,43 @@ public final class SessionController: @unchecked Sendable {
             peerID = id
             self.lock.lock()
             self.pending.removeValue(forKey: ObjectIdentifier(link))
-            // Two Macs can dial each other at once -- more easily since both sides were
-            // allowed to redial -- and this used to overwrite the map entry, leaving the
-            // first link connected but unreferenced. Keep the established one and cancel
-            // the newcomer: if the incumbent is genuinely dead it will drop on its own
-            // and the sweep will dial a fresh one a moment later.
-            let duplicate = self.links[id] != nil && self.links[id] !== link
-            if !duplicate { self.links[id] = link }
+            // Two links to one peer: both Macs must keep the *same* one.
+            //
+            // The previous rule kept whichever link this Mac happened to learn about
+            // first. That is local knowledge, and the other Mac can learn about them in
+            // the opposite order -- so each end kept a different TCP connection and
+            // cancelled the one the other end was using. Both died, both redialled, and
+            // it repeated: 47 cancellations in four days, most exactly one redial cycle
+            // (17-19s) apart. It also meant a fresh link from a Mac that had given up on
+            // a black-holed one was thrown away in favour of the black hole, which is
+            // what stretched the stall on 14 September out until TCP finally gave up.
+            var replaced: StationLink?
+            var keepNew = true
+            if let incumbent = self.links[id], incumbent !== link {
+                keepNew = Self.keepsNewcomer(
+                    incumbentDialledByLowerID: incumbent.isInitiator == self.shouldInitiate(to: id),
+                    newcomerDialledByLowerID: link.isInitiator == self.shouldInitiate(to: id))
+                if keepNew {
+                    replaced = incumbent
+                    // Forwarding follows the link. Sends made before the new link's
+                    // channel opens are queued and delivered in order, not dropped.
+                    if self.activeLink === incumbent { self.activeLink = link }
+                }
+            }
+            if keepNew { self.links[id] = link }
             if let expectedName { self.names[id] = expectedName }
             self.lock.unlock()
-            if duplicate {
-                Self.debugLog("redundant link to \(self.names[id] ?? id) cancelled")
+            let name = self.names[id] ?? id
+            if !keepNew {
+                Self.debugLog("redundant link to \(name) cancelled (kept the existing one)")
                 link.cancel()
                 return
+            }
+            if let replaced {
+                // Already unmapped, so its own teardown reads as stale and leaves the
+                // peer's state alone.
+                Self.debugLog("link to \(name) replaced by a newer one both Macs agree on")
+                replaced.cancel()
             }
             _ = known
         }
