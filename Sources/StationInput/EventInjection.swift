@@ -18,7 +18,14 @@ import StationKit
 /// visible to the user as dropped modifiers and stuttering gestures.
 public final class EventInjection: @unchecked Sendable {
 
-    private var bounds: Rect
+    /// Read on the link's receive queue for every event, and replaced from the main
+    /// thread when the display arrangement changes, so it needs its own lock.
+    private var bounds: Rect {
+        get { boundsLock.lock(); defer { boundsLock.unlock() }; return storedBounds }
+        set { boundsLock.lock(); storedBounds = newValue; boundsLock.unlock() }
+    }
+    private var storedBounds: Rect
+    private let boundsLock = NSLock()
     /// Where we believe the cursor is, so we can avoid redundant warps on the hot path.
     private var lastWarped: CGPoint?
 
@@ -32,7 +39,7 @@ public final class EventInjection: @unchecked Sendable {
     ]
 
     public init(bounds: Rect = ScreenGeometry.globalBounds) {
-        self.bounds = bounds
+        self.storedBounds = bounds
     }
 
     public func refreshScreens() {

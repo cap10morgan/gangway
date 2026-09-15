@@ -95,6 +95,8 @@ public final class SessionController: @unchecked Sendable {
     /// Guards against control being stuck on a peer that is no longer usable.
     private var forwardingWatchdog: Timer?
     private var redialTimer: Timer?
+    private var watchingDisplays = false
+    nonisolated(unsafe) private var screenRefreshPending = false
     private var heartbeatTimer: Timer?
     /// When a dial to each peer was last started, so a 3s sweep cannot stack half-open
     /// connections on top of one that is still trying. `connect(to:)` only refuses when
@@ -300,6 +302,7 @@ public final class SessionController: @unchecked Sendable {
             return
         }
         startCapture()
+        watchDisplays()
 
         // Reconnecting must not depend on someone else raising an event; see
         // `redialKnownPeers`. Cheap: it does nothing at all unless a paired Mac we know
@@ -325,6 +328,57 @@ public final class SessionController: @unchecked Sendable {
         }
     }
 
+    // MARK: - Displays
+
+    /// Keep screen geometry current when monitors are attached, detached or rearranged.
+    ///
+    /// Geometry used to be read once, when capture was created. `refreshScreens` existed
+    /// on both capture and injection but nothing ever called it, so after plugging in
+    /// or unplugging a monitor this Mac kept watching the old edges -- pushing at the
+    /// real edge did nothing -- and kept placing injected input by the old arrangement,
+    /// while the other Mac mapped the pointer onto screens that were no longer there.
+    /// Only restarting Station fixed it.
+    private func watchDisplays() {
+        guard !watchingDisplays else { return }
+        watchingDisplays = true
+        CGDisplayRegisterReconfigurationCallback(stationDisplayReconfigured,
+                                                 Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    private func stopWatchingDisplays() {
+        guard watchingDisplays else { return }
+        watchingDisplays = false
+        CGDisplayRemoveReconfigurationCallback(stationDisplayReconfigured,
+                                               Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    /// One change is reported once per affected display, so attaching a dock with two
+    /// monitors arrives as a burst. Coalesce it into one refresh.
+    fileprivate func displaysChanged() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.screenRefreshPending else { return }
+            self.screenRefreshPending = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.applyDisplayChange()
+            }
+        }
+    }
+
+    private func applyDisplayChange() {
+        screenRefreshPending = false
+        let screens = ScreenGeometry.localScreens()
+        let b = screens.bounds
+        capture?.refreshScreens()
+        injection.refreshScreens()
+        Self.debugLog(String(format: "displays changed; screen area now %.0f,%.0f to %.0f,%.0f",
+                             b.minX, b.minY, b.maxX, b.maxY))
+        // The other Macs map the pointer onto our screens using the geometry we sent
+        // when the link opened. Send it again, or they keep aiming at the old ones.
+        for link in allLinks() {
+            try? link.send(.screens, json: screens)
+        }
+    }
+
     /// Ask every established peer to prove Station is still running there.
     private func pingPeers() {
         lock.lock()
@@ -344,6 +398,7 @@ public final class SessionController: @unchecked Sendable {
     private static let redialInterval: TimeInterval = 3
 
     public func stop() {
+        stopWatchingDisplays()
         redialTimer?.invalidate()
         redialTimer = nil
         heartbeatTimer?.invalidate()
@@ -1096,4 +1151,14 @@ extension Data {
         }
         self = bytes
     }
+}
+
+/// A plain function so the identical pointer can be passed to register and remove.
+private func stationDisplayReconfigured(_ display: CGDirectDisplayID,
+                                        _ flags: CGDisplayChangeSummaryFlags,
+                                        _ userInfo: UnsafeMutableRawPointer?) {
+    // Each change is reported as it begins and again when it is done; geometry read at
+    // the beginning is still the old arrangement.
+    guard !flags.contains(.beginConfigurationFlag), let userInfo else { return }
+    Unmanaged<SessionController>.fromOpaque(userInfo).takeUnretainedValue().displaysChanged()
 }
