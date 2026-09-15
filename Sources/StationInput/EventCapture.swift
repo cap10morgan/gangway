@@ -247,6 +247,11 @@ public final class EventCapture: @unchecked Sendable {
             let last = lastNotReadyReport[crossing.peer] ?? .distantPast
             if now.timeIntervalSince(last) > Self.notReadyReportInterval {
                 lastNotReadyReport[crossing.peer] = now
+                // This used to be silent: the push went nowhere and nothing said why.
+                SessionController.debugLog("crossing to \(crossing.peer.prefix(8)) held: "
+                    + (peerBounds[crossing.peer] == nil
+                       ? "no screen geometry received from that Mac"
+                       : "that Mac is not marked ready"))
                 onPeerNotReady?(crossing.peer, crossing.entry)
             }
             return

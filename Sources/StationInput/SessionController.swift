@@ -886,7 +886,12 @@ public final class SessionController: @unchecked Sendable {
         let endpoint = endpoints[peer]
         lock.unlock()
 
-        if haveLink { return }
+        if haveLink {
+            // The crossing is held until the peer's screens arrive and `markReady` runs.
+            // If they never arrive, this waits forever, so at least say that it is.
+            Self.debugLog("\(names[peer] ?? peer): link exists but not ready; crossing held")
+            return
+        }
         guard endpoint != nil else {
             onEvent?(.failed("\(names[peer] ?? "That Mac") is not on the network."))
             return
