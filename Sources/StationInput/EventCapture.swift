@@ -71,11 +71,33 @@ public final class EventCapture: @unchecked Sendable {
 
     public func setPeerBounds(_ bounds: Rect, for peer: DeviceID) {
         peerBounds[peer] = bounds
+        // The pointer already on that Mac took a copy of its geometry when control
+        // crossed, so a display change over there went unnoticed until control came
+        // back: motion was scaled to the old screens. The normalized position carries
+        // over as it is; only the scale changes.
+        if case .forwarding(let current) = mode, current == peer {
+            remoteCursor?.peerBounds = bounds
+        }
     }
 
     /// Re-read the display arrangement, e.g. after a monitor is attached.
     public func refreshScreens() {
         localBounds = ScreenGeometry.globalBounds
+        // While forwarding, the hidden local pointer is held at `parkedCursor`, and that
+        // point may have been on a display that has just gone. Move it into what
+        // remains; the next pointer event warps it there, and returning control
+        // restores it there.
+        if case .forwarding = mode {
+            parkedCursor = Self.point(parkedCursor, inside: localBounds,
+                                      margin: Self.returnMarginPixels)
+        }
+    }
+
+    /// `point`, moved the least distance needed to sit at least `margin` pixels inside
+    /// `bounds`.
+    static func point(_ point: CGPoint, inside bounds: Rect, margin: Double) -> CGPoint {
+        CGPoint(x: min(max(point.x, bounds.minX + margin), bounds.maxX - 1 - margin),
+                y: min(max(point.y, bounds.minY + margin), bounds.maxY - 1 - margin))
     }
 
     public enum CaptureError: LocalizedError {
@@ -151,12 +173,10 @@ public final class EventCapture: @unchecked Sendable {
 
     /// Move the pointer just inside every edge it is currently sitting on.
     private func nudgeInsideEdges() {
-        let margin = Self.returnMarginPixels
         let p = ScreenGeometry.currentCursor
-        let x = min(max(p.x, localBounds.minX + margin), localBounds.maxX - 1 - margin)
-        let y = min(max(p.y, localBounds.minY + margin), localBounds.maxY - 1 - margin)
-        guard x != p.x || y != p.y else { return }
-        CGWarpMouseCursorPosition(CGPoint(x: x, y: y))
+        let target = Self.point(p, inside: localBounds, margin: Self.returnMarginPixels)
+        guard target != p else { return }
+        CGWarpMouseCursorPosition(target)
         // The warp opens a local-events suppression interval; end it immediately.
         CGAssociateMouseAndMouseCursorPosition(1)
     }
