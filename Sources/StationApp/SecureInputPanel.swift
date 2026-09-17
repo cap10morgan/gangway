@@ -26,8 +26,8 @@ final class SecureInputPanel {
 
     private var window: NSPanel?
 
-    func show(peer: String?, holder: String?) {
-        let view = SecureInputWarningView(peer: peer, holder: holder)
+    func show(peer: String?, holder: String?, onThisMac: Bool = true) {
+        let view = SecureInputWarningView(peer: peer, holder: holder, onThisMac: onThisMac)
         if let window {
             (window.contentViewController as? NSHostingController<SecureInputWarningView>)?
                 .rootView = view
@@ -66,35 +66,50 @@ final class SecureInputPanel {
 struct SecureInputWarningView: View {
     let peer: String?
     let holder: String?
+    /// Whether the keyboard being held is this Mac's. The same condition needs opposite
+    /// wording on the two screens: here it is "your keyboard is held", and on the Mac
+    /// being driven it is "the keys you are typing are not arriving".
+    var onThisMac: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label {
-                Text("Keystrokes aren't reaching \(peer ?? "the other Mac")")
+                Text(onThisMac
+                     ? "Keystrokes aren't reaching \(peer ?? "the other Mac")"
+                     : "\(peer ?? "The other Mac") can't send keystrokes right now")
                     .font(.headline)
             } icon: {
                 Image(systemName: "keyboard.badge.exclamationmark")
                     .foregroundStyle(.orange)
             }
 
-            Text("An app on this Mac has Secure Keyboard Entry turned on, which stops "
-                 + "Station from reading the keyboard. The pointer and trackpad still "
-                 + "work normally.")
+            Text(onThisMac
+                 ? "Something on this Mac has Secure Keyboard Entry turned on, which "
+                   + "stops Station from reading the keyboard. The pointer and trackpad "
+                   + "still work normally."
+                 : "Secure Keyboard Entry is on over there, so what you type stays on "
+                   + "that Mac. The pointer and trackpad still work normally.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // Labelled as a guess on purpose. macOS exposes no way to ask which process
-            // holds secure input, and stating the frontmost app as fact would send
-            // people to quit something innocent.
-            if let holder {
-                Text("Most likely **\(holder)**, which is frontmost.")
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // Naming the frontmost app was a guess dressed as a finding: macOS exposes
+            // no way to ask who holds secure input, and the answer is nearly always a
+            // password prompt the user is already looking at, so the name added nothing
+            // and risked sending someone to quit something innocent.
+            Text(onThisMac
+                 ? "Nothing you type is being sent to the other Mac, so a password typed "
+                   + "now stays on this one — Station never sees these keystrokes."
+                 : "A password typed now stays on that Mac — Station never sees these "
+                   + "keystrokes.")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
 
+            // The fixes are all things to do on the Mac holding the keyboard, so they
+            // are only shown there. On the other screen they would be instructions for
+            // a machine the reader is not looking at.
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(SecureInput.quickFixes, id: \.self) { fix in
+                ForEach(onThisMac ? SecureInput.quickFixes : [], id: \.self) { fix in
                     Text("• \(fix)")
                         .font(.caption)
                         .foregroundStyle(.secondary)

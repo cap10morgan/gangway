@@ -15,6 +15,9 @@ public enum MessageType: UInt8, Sendable {
     case pairResult  = 0x03
     case heartbeat   = 0x04
     case screens     = 0x05
+    /// Whether the sending Mac's keyboard is being withheld by Secure Event Input, so
+    /// the Mac being driven can say why nothing is typing. Sent only while forwarding.
+    case keyboardState = 0x06
 
     // Data plane (binary payloads) - high frequency, compactness wins.
     case input       = 0x10
@@ -105,6 +108,14 @@ public struct Rect: Codable, Sendable, Equatable {
     public var minY: Double { y }
     public var maxX: Double { x + width }
     public var maxY: Double { y + height }
+}
+
+/// Sent by the forwarding Mac when Secure Event Input starts or stops withholding its
+/// keyboard. No holder name: macOS does not say who holds it, and the guess was worth
+/// less than the confusion it caused.
+public struct KeyboardState: Codable, Sendable, Equatable {
+    public var blocked: Bool
+    public init(blocked: Bool) { self.blocked = blocked }
 }
 
 public struct ScreenSet: Codable, Sendable {

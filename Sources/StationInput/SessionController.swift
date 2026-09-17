@@ -39,6 +39,9 @@ public final class SessionController: @unchecked Sendable {
         case keyboardBlocked(holder: String?)
         /// Secure Event Input was released and keystrokes forward again.
         case keyboardUnblocked
+        /// The Mac currently driving this one says its keyboard is held, or freed
+        /// again. Reported here because this is the screen its user is looking at.
+        case peerKeyboardBlocked(name: String, blocked: Bool)
         case peerDisconnected(name: String, reason: String?)
         /// Control moved to a peer, or came back here. Only ever emitted by the Mac
         /// that owns the physical keyboard and mouse.
@@ -827,6 +830,13 @@ public final class SessionController: @unchecked Sendable {
         case .clipboard:
             receiveClipboard(payload)
 
+        case .keyboardState:
+            guard let peer,
+                  let state = try? JSONDecoder().decode(KeyboardState.self, from: payload)
+            else { return }
+            onEvent?(.peerKeyboardBlocked(name: names[peer] ?? "The other Mac",
+                                          blocked: state.blocked))
+
         default:
             break
         }
@@ -907,6 +917,7 @@ public final class SessionController: @unchecked Sendable {
         capture.onReturnLocal = { [weak self] _, _ in
             guard let self else { return }
             self.clearCongestion()
+            try? self.activeLink?.send(.keyboardState, json: KeyboardState(blocked: false))
             self.activeLink = nil
             self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
             self.onEvent?(.controlMoved(remote: false, peer: nil))
@@ -914,6 +925,7 @@ public final class SessionController: @unchecked Sendable {
         capture.onEscapeHatch = { [weak self] in
             guard let self else { return }
             self.clearCongestion()
+            try? self.activeLink?.send(.keyboardState, json: KeyboardState(blocked: false))
             self.activeLink = nil
             self.allLinks().forEach { $0.send(.leaveScreen, Data()) }
             self.onEvent?(.controlMoved(remote: false, peer: nil))
@@ -1088,6 +1100,10 @@ public final class SessionController: @unchecked Sendable {
         secureInputBlocked = blocked
         guard changed || (announceIfBlocked && blocked) else { return }
         Self.debugLog("secure input \(blocked ? "enabled" : "released")")
+        // Tell the Mac being driven. The pointer is over there, so that is the screen
+        // the user is looking at when the keyboard goes quiet; a notice only on this
+        // Mac is a notice behind them.
+        try? activeLink?.send(.keyboardState, json: KeyboardState(blocked: blocked))
         onEvent?(blocked ? .keyboardBlocked(holder: SecureInput.likelyHolder())
                          : .keyboardUnblocked)
     }

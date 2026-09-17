@@ -72,9 +72,9 @@ public enum SecureInput {
     /// half-broken. Ordered by how likely it is to be the answer, and phrased as
     /// things to go and do rather than things that are true.
     public static let quickFixes = [
-        "Ghostty: turn off Secure Keyboard Entry in its menu",
-        "Terminal or iTerm2: uncheck Secure Keyboard Entry in the app menu",
-        "Click out of any password field, or close a password manager window",
+        "Finish or dismiss the password prompt — an unlocking password manager is the usual cause",
+        "Click out of any password field",
+        "Ghostty, Terminal or iTerm2: turn off Secure Keyboard Entry in the app menu",
     ]
 
     /// The applications that habitually enable it, worth checking by hand.
@@ -84,12 +84,13 @@ public enum SecureInput {
     /// attribute: the keyboard stops working, and by the time anyone looks, the prompt
     /// has finished and nothing appears to be holding it.
     public static let commonCauses = [
+        "A password prompt: a password manager holds it while unlocking, "
+            + "which is by far the most common cause and clears itself",
+        "A focused password field in any app",
         "Ghostty: enables it automatically at password prompts "
             + "(macos-auto-secure-input, on by default), and can be toggled from its menu",
         "Terminal: Terminal menu > Secure Keyboard Entry",
         "iTerm2: iTerm2 menu > Secure Keyboard Entry",
-        "A focused password field in any app",
-        "1Password and similar, while their window has focus",
         "The login window or fast user switching",
     ]
 }

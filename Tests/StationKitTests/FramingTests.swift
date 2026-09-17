@@ -139,3 +139,40 @@ final class ScreenSetTests: XCTestCase {
         XCTAssertEqual(ScreenSet(screens: []).bounds, Rect(x: 0, y: 0, width: 0, height: 0))
     }
 }
+
+extension FramingTests {
+
+    /// Adding a message type must not break the Mac that does not know it yet.
+    ///
+    /// The decrypted-frame loop used to let an unknown type propagate, and the caller
+    /// treated that as a broken channel and dropped the link -- so the older Mac would
+    /// disconnect the instant a newer one sent something new.
+    func testAnUnknownTypeIsSkippedAndLaterFramesStillArrive() throws {
+        var stream = Data()
+        stream.append(Framing.frame(.hello, Data("first".utf8)))
+        // A type byte no build uses, framed the way a real frame is.
+        stream.appendLE(UInt32(3))
+        stream.append(0xEE)
+        stream.append(Data("bad".utf8))
+        stream.append(Framing.frame(.heartbeat, Data("second".utf8)))
+
+        var decoder = FrameDecoder()
+        decoder.append(stream)
+        let frames = try decoder.drainSkippingUnknown()
+
+        XCTAssertEqual(frames.map(\.type), [.hello, .heartbeat])
+        XCTAssertEqual(frames.map(\.payload), [Data("first".utf8), Data("second".utf8)])
+    }
+
+    func testDrainStopsAtAPartialFrameWithoutLosingIt() throws {
+        var decoder = FrameDecoder()
+        let whole = Framing.frame(.hello, Data("complete".utf8))
+        decoder.append(whole + Framing.frame(.heartbeat, Data("cut off".utf8)).prefix(6))
+
+        XCTAssertEqual(try decoder.drainSkippingUnknown().map(\.type), [.hello])
+
+        // The rest of the truncated frame arrives on a later read.
+        decoder.append(Framing.frame(.heartbeat, Data("cut off".utf8)).dropFirst(6))
+        XCTAssertEqual(try decoder.drainSkippingUnknown().map(\.type), [.heartbeat])
+    }
+}

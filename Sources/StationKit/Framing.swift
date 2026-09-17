@@ -24,6 +24,28 @@ public enum Framing {
     }
 }
 
+public extension FrameDecoder {
+    /// Every complete frame currently buffered, skipping any whose type this build does
+    /// not know.
+    ///
+    /// An unknown type used to propagate out of the decrypted-frame loop and be treated
+    /// as a broken channel, dropping the link. That makes adding any message type a
+    /// breaking change: the *older* Mac disconnects the moment the newer one sends it.
+    /// A frame we cannot interpret is not evidence of tampering -- authentication has
+    /// already succeeded by this point -- so skip it and keep the connection.
+    mutating func drainSkippingUnknown() throws -> [(type: MessageType, payload: Data)] {
+        var frames: [(type: MessageType, payload: Data)] = []
+        while true {
+            do {
+                guard let frame = try next() else { return frames }
+                frames.append(frame)
+            } catch FramingError.unknownMessageType {
+                continue   // already removed from the buffer by `next()`
+            }
+        }
+    }
+}
+
 public enum FramingError: Error, Equatable {
     case frameTooLarge(Int)
     case unknownMessageType(UInt8)

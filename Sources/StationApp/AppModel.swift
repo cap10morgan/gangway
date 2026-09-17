@@ -304,6 +304,8 @@ final class AppModel {
         codePanel.hide()
         isBeingControlled = false
         keyboardBlockedBy = nil
+        secureInputWarningTimer?.invalidate()
+        secureInputWarningTimer = nil
         secureInputPanel.hide()
         peerLagPanel.hide()
         secureInputVerifier?.invalidate()
@@ -427,9 +429,55 @@ final class AppModel {
     /// Warn only when both halves of the problem are true: the keyboard is held, and
     /// we are actually trying to forward it somewhere.
     private func showSecureInputWarningIfNeeded() {
-        guard controlIsRemote, let block = keyboardBlockedBy else { return }
+        guard controlIsRemote, keyboardBlockedBy != nil else { return }
+        guard secureInputWarningTimer == nil else { return }
+        // Wait before saying anything. The detector only fires while someone is
+        // actually typing, which means it fires reliably during a password unlock --
+        // the one case where secure input is doing its job and the user is already
+        // looking at the prompt. Those clear in a few seconds. What survives the wait
+        // is the case worth interrupting for: Secure Keyboard Entry left switched on in
+        // a terminal, which never clears by itself.
+        secureInputWarningTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.secureInputWarningDelay, repeats: false) { _ in
+            Task { @MainActor [weak self] in self?.showSecureInputWarningNow() }
+        }
+    }
+
+    private func showSecureInputWarningNow() {
+        secureInputWarningTimer = nil
+        guard controlIsRemote, let block = keyboardBlockedBy, SecureInput.isEnabled else { return }
         secureInputPanel.show(peer: connectedPeer, holder: block.holder)
         startSecureInputVerification()
+    }
+
+    /// Long enough for an ordinary unlock to finish unremarked.
+    private static let secureInputWarningDelay: TimeInterval = 5
+    private var secureInputWarningTimer: Timer?
+    private var peerKeyboardWarningTimer: Timer?
+    private var peerKeyboardBlockedBy: String?
+
+    /// The same wait as the local warning, for the same reason: the Mac driving this
+    /// one reports the moment secure input starts, and an unlock that finishes in three
+    /// seconds should never have been mentioned.
+    private func showPeerKeyboardWarningIfNeeded() {
+        guard isBeingControlled, peerKeyboardBlockedBy != nil else { return }
+        guard peerKeyboardWarningTimer == nil else { return }
+        peerKeyboardWarningTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.secureInputWarningDelay, repeats: false) { _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.peerKeyboardWarningTimer = nil
+                guard self.isBeingControlled, let name = self.peerKeyboardBlockedBy else { return }
+                self.secureInputPanel.show(peer: name, holder: nil, onThisMac: false)
+            }
+        }
+    }
+
+    private func clearPeerKeyboardWarning() {
+        peerKeyboardBlockedBy = nil
+        peerKeyboardWarningTimer?.invalidate()
+        peerKeyboardWarningTimer = nil
+        secureInputPanel.hide()
     }
 
     /// Keep checking for as long as the warning is up, and take it down the moment the
@@ -447,6 +495,8 @@ final class AppModel {
                 guard let self else { return }
                 guard self.controlIsRemote, SecureInput.isEnabled else {
                     self.keyboardBlockedBy = nil
+                    self.secureInputWarningTimer?.invalidate()
+                    self.secureInputWarningTimer = nil
                     self.secureInputPanel.hide()
                     self.secureInputVerifier?.invalidate()
                     self.secureInputVerifier = nil
@@ -491,14 +541,23 @@ final class AppModel {
             behind ? peerLagPanel.show(peer: name) : peerLagPanel.hide()
         case .keyboardUnblocked:
             keyboardBlockedBy = nil
+            secureInputWarningTimer?.invalidate()
+            secureInputWarningTimer = nil
             secureInputPanel.hide()
             // Clear it rather than leaving a stale complaint about a fixed problem.
             if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
+        case .peerKeyboardBlocked(let name, let blocked):
+            if blocked {
+                peerKeyboardBlockedBy = name
+                showPeerKeyboardWarningIfNeeded()
+            } else {
+                clearPeerKeyboardWarning()
+            }
         case .keyboardBlocked(let holder):
             keyboardBlockedBy = .init(holder: holder)
-            lastError = "Another app has Secure Keyboard Entry turned on, so keystrokes "
-                      + "cannot be sent to the other Mac. Terminal's Secure Keyboard "
-                      + "Entry setting is the usual cause."
+            lastError = "Secure Keyboard Entry is on, so keystrokes cannot be sent to "
+                      + "the other Mac. A password prompt is the usual cause and clears "
+                      + "itself; otherwise check Secure Keyboard Entry in your terminal."
             showSecureInputWarningIfNeeded()
         case .layoutChanged(let incoming):
             // Already applied to the capture layer by the session; store and show it.
@@ -528,6 +587,8 @@ final class AppModel {
             remote ? showSecureInputWarningIfNeeded() : secureInputPanel.hide()
         case .beingControlled(let active, let peer):
             isBeingControlled = active
+            // A notice about the other Mac's keyboard cannot outlive it driving this one.
+            if !active { clearPeerKeyboardWarning() }
             statusMessage = active
                 ? "\(peer ?? "Another Mac") is controlling this one"
                 : "Control is here"
@@ -559,6 +620,8 @@ final class AppModel {
         case .keyboardUnblocked:            return "secure input released"
         case .peerDisconnected(let n, _):   return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
+        case .peerKeyboardBlocked(let n, let b):
+            return b ? "\(n) cannot send keystrokes" : "\(n) can send keystrokes again"
         case .beingControlled(let on, _):   return on ? "a peer is driving this Mac"
                                                       : "peer stopped driving this Mac"
         case .clipboardSynced(let sent, let b): return "clipboard \(sent ? "sent" : "received") \(b)B"

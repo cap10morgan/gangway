@@ -420,10 +420,8 @@ public final class StationLink: @unchecked Sendable {
 
                 var innerDecoder = FrameDecoder()
                 innerDecoder.append(inner)
-                var frames: [(MessageType, Data)] = []
-                while let frame = try innerDecoder.next() {
-                    frames.append((frame.type, frame.payload))
-                }
+                let frames = try innerDecoder.drainSkippingUnknown()
+                    .map { ($0.type, $0.payload) }
 
                 // Deliver nothing until the user has confirmed the SAS. Keys exist as
                 // soon as the handshake completes, so without this an unconfirmed peer

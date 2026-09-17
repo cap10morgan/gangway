@@ -132,6 +132,9 @@ case "run":
             log("station", "SECURE INPUT is on\(guess): keystrokes will not forward")
         case .keyboardUnblocked:
             log("station", "secure input released; keystrokes forward again")
+        case .peerKeyboardBlocked(let name, let blocked):
+            log("station", blocked ? "\(name) has secure input on; its keystrokes are not arriving"
+                                   : "\(name) can send keystrokes again")
         case .layoutChanged(let incoming):
             LayoutStore.save(incoming)
             log("station", "arrangement updated by another Mac (\(incoming.placements.count) Macs)")
