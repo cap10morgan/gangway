@@ -129,10 +129,20 @@ struct StationMenu: View {
     /// A menu item's image is a template image, so `Image(systemName: "circle.fill")`
     /// tinted green arrives in the menu as a grey dot. Emoji carry their own colour and
     /// survive the trip into AppKit intact.
+    /// Three states, because two conflated the only two things a dot can mean here.
+    /// Red on a Mac that has never been paired reads as a fault, when nothing is wrong
+    /// with it at all -- it simply has not been set up yet, which is a thing to go and
+    /// do rather than a thing to worry about.
     private func peerSummary(_ peer: DiscoveredPeer) -> String {
-        let connected = model.connectedPeer == peer.name
-        let dot = connected ? "🟢" : "🔴"
-        if connected { return "\(dot) \(peer.name) — Connected" }
+        let dot: String
+        if model.connectedPeer == peer.name {
+            dot = "🟢"
+        } else if model.isPaired(peer) {
+            dot = "🔴"
+        } else {
+            dot = "🟠"
+        }
+        if model.connectedPeer == peer.name { return "\(dot) \(peer.name) — Connected" }
         if let step = model.nextStep(for: peer) { return "\(dot) \(peer.name) — \(step)" }
         return "\(dot) \(peer.name)"
     }
