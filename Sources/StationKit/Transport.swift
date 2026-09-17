@@ -696,7 +696,9 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
                 guard getnameinfo(sa, socklen_t(data.count), &buffer,
                                   socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0
                 else { return nil }
-                return String(cString: buffer)
+                // `getnameinfo` NUL-terminates; drop that and everything after it.
+                return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+                              as: UTF8.self)
             }
             guard let host, !host.isEmpty else { continue }
             // A scoped address is only valid on the interface it names, and those are

@@ -438,8 +438,8 @@ final class AppModel {
         // is the case worth interrupting for: Secure Keyboard Entry left switched on in
         // a terminal, which never clears by itself.
         secureInputWarningTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.secureInputWarningDelay, repeats: false) { _ in
-            Task { @MainActor [weak self] in self?.showSecureInputWarningNow() }
+            withTimeInterval: Self.secureInputWarningDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.showSecureInputWarningNow() }
         }
     }
 
@@ -463,8 +463,8 @@ final class AppModel {
         guard isBeingControlled, peerKeyboardBlockedBy != nil else { return }
         guard peerKeyboardWarningTimer == nil else { return }
         peerKeyboardWarningTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.secureInputWarningDelay, repeats: false) { _ in
-            Task { @MainActor [weak self] in
+            withTimeInterval: Self.secureInputWarningDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
                 guard let self else { return }
                 self.peerKeyboardWarningTimer = nil
                 guard self.isBeingControlled, let name = self.peerKeyboardBlockedBy else { return }
@@ -490,8 +490,8 @@ final class AppModel {
     /// own reason for existing.
     private func startSecureInputVerification() {
         guard secureInputVerifier == nil else { return }
-        secureInputVerifier = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            Task { @MainActor [weak self] in
+        secureInputVerifier = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
                 guard let self else { return }
                 guard self.controlIsRemote, SecureInput.isEnabled else {
                     self.keyboardBlockedBy = nil

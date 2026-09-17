@@ -368,7 +368,10 @@ case "watch-secure-input":
         .appendingPathComponent("Library/Logs/Station-secure-input.log")
     nonisolated(unsafe) var previous = SecureInput.isEnabled
 
-    func record(_ line: String) {
+    // A closure rather than a local function: top-level code is main-actor isolated, so
+    // a local `func` called from the timer's @Sendable closure is an isolation
+    // violation. Nothing here touches main-actor state.
+    let record: @Sendable (String) -> Void = { line in
         let stamped = "\(Date().formatted(date: .abbreviated, time: .standard))  \(line)\n"
         FileHandle.standardOutput.write(Data(stamped.utf8))
         if let h = try? FileHandle(forWritingTo: logURL) {

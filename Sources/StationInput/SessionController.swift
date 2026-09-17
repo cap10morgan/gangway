@@ -262,7 +262,8 @@ public final class SessionController: @unchecked Sendable {
             let peakMs = Double(injectPeak) / 1_000_000
             line += String(format: "  inject: mean %.2fms peak %.2fms", meanMs, peakMs)
         }
-        DispatchQueue.global(qos: .utility).async { debugLog(line) }
+        let rendered = line
+        DispatchQueue.global(qos: .utility).async { debugLog(rendered) }
     }
 
     private static func typeName(_ t: UInt32) -> String {
