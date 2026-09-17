@@ -41,15 +41,9 @@ struct StationMenu: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        // Plain `Text` renders as a disabled menu item, which is how the system menus
-        // show status they do not want you to click.
-        Text(model.statusMessage)
-        if model.isRunning, model.permissions.allGranted {
-            Text(controlSummary)
-        }
-
-        Divider()
-
+        // No status header. Which Mac holds control changes constantly and belongs to
+        // whichever one the pointer is on, so stating it here was both redundant with
+        // the peer list and out of date the moment it was read.
         if model.permissions.allGranted {
             settingsToggles
         } else {
@@ -78,18 +72,6 @@ struct StationMenu: View {
 
         Button("Quit Station") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
-    }
-
-    /// Where the pointer is. Kept out of the menu bar icon deliberately -- see
-    /// `AppModel.menuBarSymbol` -- but useful once someone has opened the menu.
-    private var controlSummary: String {
-        if model.isBeingControlled {
-            return "\(model.connectedPeer ?? "Another Mac") is controlling this Mac"
-        }
-        if model.controlIsRemote {
-            return "Control is on \(model.connectedPeer ?? "the other Mac")"
-        }
-        return "Control is here"
     }
 
     /// Toggles become checkmarked items, which is what a menu uses for a setting that
