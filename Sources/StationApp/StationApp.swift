@@ -124,9 +124,16 @@ struct StationMenu: View {
         }
     }
 
+    /// Emoji rather than an SF Symbol, because the colour is the whole point.
+    ///
+    /// A menu item's image is a template image, so `Image(systemName: "circle.fill")`
+    /// tinted green arrives in the menu as a grey dot. Emoji carry their own colour and
+    /// survive the trip into AppKit intact.
     private func peerSummary(_ peer: DiscoveredPeer) -> String {
-        if model.connectedPeer == peer.name { return "\(peer.name) — Connected" }
-        if let step = model.nextStep(for: peer) { return "\(peer.name) — \(step)" }
-        return peer.name
+        let connected = model.connectedPeer == peer.name
+        let dot = connected ? "🟢" : "🔴"
+        if connected { return "\(dot) \(peer.name) — Connected" }
+        if let step = model.nextStep(for: peer) { return "\(dot) \(peer.name) — \(step)" }
+        return "\(dot) \(peer.name)"
     }
 }
