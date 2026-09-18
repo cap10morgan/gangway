@@ -139,13 +139,17 @@ struct StationMenu: View {
     /// Red on a Mac that has never been paired reads as a fault, when nothing is wrong
     /// with it at all -- it simply has not been set up yet, which is a thing to go and
     /// do rather than a thing to worry about.
+    private func isConnected(_ peer: DiscoveredPeer) -> Bool {
+        peer.deviceID != nil && peer.deviceID == model.connectedPeerID
+    }
+
     private func status(of peer: DiscoveredPeer) -> StatusDot {
-        if model.connectedPeer == peer.name { return .connected }
+        if isConnected(peer) { return .connected }
         return model.isPaired(peer) ? .offline : .unpaired
     }
 
     private func peerSummary(_ peer: DiscoveredPeer) -> String {
-        if model.connectedPeer == peer.name { return "\(peer.name) — Connected" }
+        if isConnected(peer) { return "\(peer.name) — Connected" }
         if let step = model.nextStep(for: peer) { return "\(peer.name) — \(step)" }
         return peer.name
     }

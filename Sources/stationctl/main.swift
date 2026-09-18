@@ -123,7 +123,7 @@ case "run":
             log("station", "waiting for approval on \(name); code \(code)")
         case .paired(let name):
             log("station", "paired with \(name)")
-        case .peerConnected(let name):
+        case .peerConnected(_, let name):
             log("station", "connected to \(name)")
         case .peerRenamed(_, let name):
             log("station", "peer is named \(name)")
@@ -138,7 +138,7 @@ case "run":
         case .layoutChanged(let incoming):
             LayoutStore.save(incoming)
             log("station", "arrangement updated by another Mac (\(incoming.placements.count) Macs)")
-        case .peerDisconnected(let name, let reason):
+        case .peerDisconnected(_, let name, let reason):
             log("station", "\(name) disconnected\(reason.map { ": \($0)" } ?? "")")
         case .peerFallingBehind(let name, let behind):
             log("station", behind ? "\(name) is falling behind; ctrl-opt-esc returns control"

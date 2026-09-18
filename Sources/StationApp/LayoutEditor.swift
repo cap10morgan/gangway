@@ -71,7 +71,7 @@ struct LayoutEditorView: View {
         if let placement = model.grid.placement(at: position) {
             MacTile(name: placement.name,
                     isLocal: placement.id == model.localDeviceID,
-                    isConnected: model.connectedPeer == placement.name)
+                    isConnected: model.connectedPeerID == placement.id)
                 .frame(width: cell, height: cell * 0.68)
                 .draggable(placement.id)
                 .dropDestination(for: String.self) { ids, _ in

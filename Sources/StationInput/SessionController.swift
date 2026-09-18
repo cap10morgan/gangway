@@ -25,7 +25,10 @@ public final class SessionController: @unchecked Sendable {
         /// We asked to join another Mac. Shown passively; the approval happens there.
         case awaitingApproval(name: String, code: String)
         case paired(name: String)
-        case peerConnected(name: String)
+        /// `id` is what identifies the Mac. `name` is for display only and may be a
+        /// placeholder: a Mac accepting a connection names the peer from its own
+        /// discovery, which can lag the connection by seconds.
+        case peerConnected(id: DeviceID, name: String)
         /// A peer's real name arrived after it was stored under a placeholder.
         case peerRenamed(peer: DeviceID, name: String)
         /// A newer arrangement arrived from another Mac.
@@ -42,7 +45,7 @@ public final class SessionController: @unchecked Sendable {
         /// The Mac currently driving this one says its keyboard is held, or freed
         /// again. Reported here because this is the screen its user is looking at.
         case peerKeyboardBlocked(name: String, blocked: Bool)
-        case peerDisconnected(name: String, reason: String?)
+        case peerDisconnected(id: DeviceID?, name: String, reason: String?)
         /// Control moved to a peer, or came back here. Only ever emitted by the Mac
         /// that owns the physical keyboard and mouse.
         case controlMoved(remote: Bool, peer: String?)
@@ -657,7 +660,7 @@ public final class SessionController: @unchecked Sendable {
                     link.confirmPairing()
                     link.announceApproval()
                     Self.debugLog("peer \(name) connected")
-                self.onEvent?(.peerConnected(name: name))
+                self.onEvent?(.peerConnected(id: id, name: name))
                 } else {
                     self.onEvent?(.approvalRequested(peer: id, name: name, code: code))
                 }
@@ -671,7 +674,7 @@ public final class SessionController: @unchecked Sendable {
                 // away comes back into step without anyone rearranging anything.
                 try? link.send(.layout, json: self.grid)
                 Self.debugLog("peer \(name) connected")
-                self.onEvent?(.peerConnected(name: name))
+                self.onEvent?(.peerConnected(id: id, name: name))
             case .failed(let reason):
                 self.drop(link, id: peerID, reason: reason)
             case .cancelled:
@@ -743,7 +746,7 @@ public final class SessionController: @unchecked Sendable {
         }
         Self.debugLog("peer \(name) disconnected\(reason.map { ": \($0)" } ?? "")"
                     + (wasActive ? " while it held control" : ""))
-        onEvent?(.peerDisconnected(name: name, reason: reason))
+        onEvent?(.peerDisconnected(id: id, name: name, reason: reason))
     }
 
     /// Called after the person here has authenticated.

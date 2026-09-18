@@ -56,6 +56,11 @@ final class AppModel {
     var awaitingApproval: (name: String, code: String)?
 
     var connectedPeer: String?
+    /// The connected Mac's identity. Matching on `connectedPeer` -- a display name --
+    /// left a connected Mac showing as disconnected whenever the connection arrived
+    /// before discovery had learned its name, because the name recorded was the
+    /// placeholder "another Mac" and never matched the list.
+    var connectedPeerID: DeviceID?
     /// Set while Secure Event Input is swallowing the keyboard. `holder` is a guess.
     struct KeyboardBlock: Equatable { var holder: String? }
     private(set) var keyboardBlockedBy: KeyboardBlock?
@@ -298,6 +303,7 @@ final class AppModel {
         session = nil
         isRunning = false
         connectedPeer = nil
+        connectedPeerID = nil
         controlIsRemote = false
         pendingApproval = nil
         awaitingApproval = nil
@@ -537,6 +543,7 @@ final class AppModel {
             statusMessage = "Paired with \(name)"
         case .peerRenamed(let peer, let name):
             renamePlacement(peer, to: name)
+            if peer == connectedPeerID { connectedPeer = name }
         case .peerFallingBehind(let name, let behind):
             behind ? peerLagPanel.show(peer: name) : peerLagPanel.hide()
         case .keyboardUnblocked:
@@ -563,16 +570,20 @@ final class AppModel {
             // Already applied to the capture layer by the session; store and show it.
             grid = incoming
             LayoutStore.save(incoming)
-        case .peerConnected(let name):
+        case .peerConnected(let id, let name):
             awaitingApproval = nil
             codePanel.hide()
             connectedPeer = name
+            connectedPeerID = id
             statusMessage = "Connected to \(name)"
-        case .peerDisconnected(let name, let reason):
+        case .peerDisconnected(let id, let name, let reason):
+            // Another Mac's link ending says nothing about this one's.
+            if let id, let current = connectedPeerID, id != current { break }
             codePanel.hide()
             secureInputPanel.hide()
             peerLagPanel.hide()
             connectedPeer = nil
+            connectedPeerID = nil
             controlIsRemote = false
             isBeingControlled = false
             statusMessage = reason.map { "\(name): \($0)" } ?? "\(name) disconnected"
@@ -610,7 +621,7 @@ final class AppModel {
         case .approvalRequested(_, let n, _): return "\(n) asked to join"
         case .awaitingApproval(let n, _):   return "waiting for approval on \(n)"
         case .paired(let n):                return "paired with \(n)"
-        case .peerConnected(let n):         return "connected to \(n)"
+        case .peerConnected(_, let n):      return "connected to \(n)"
         case .peerRenamed(_, let n):        return "peer is named \(n)"
         case .layoutChanged:                return "arrangement updated by another Mac"
         case .peerFallingBehind(let n, let b): return b ? "\(n) is falling behind"
@@ -618,7 +629,7 @@ final class AppModel {
         case .keyboardBlocked(let h):       return "keyboard blocked by secure input"
                                             + (h.map { " (maybe \($0))" } ?? "")
         case .keyboardUnblocked:            return "secure input released"
-        case .peerDisconnected(let n, _):   return "\(n) disconnected"
+        case .peerDisconnected(_, let n, _): return "\(n) disconnected"
         case .controlMoved(let remote, _):  return remote ? "control -> peer" : "control -> here"
         case .peerKeyboardBlocked(let n, let b):
             return b ? "\(n) cannot send keystrokes" : "\(n) can send keystrokes again"
