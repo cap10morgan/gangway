@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import StationKit
 import StationInput
@@ -119,7 +120,12 @@ struct StationMenu: View {
             Divider()
             Text("Macs on This Network")
             ForEach(model.peers) { peer in
-                Text(peerSummary(peer))
+                Label {
+                    Text(peerSummary(peer))
+                } icon: {
+                    Image(nsImage: status(of: peer).image)
+                        .renderingMode(.original)
+                }
             }
         }
     }
@@ -133,17 +139,47 @@ struct StationMenu: View {
     /// Red on a Mac that has never been paired reads as a fault, when nothing is wrong
     /// with it at all -- it simply has not been set up yet, which is a thing to go and
     /// do rather than a thing to worry about.
+    private func status(of peer: DiscoveredPeer) -> StatusDot {
+        if model.connectedPeer == peer.name { return .connected }
+        return model.isPaired(peer) ? .offline : .unpaired
+    }
+
     private func peerSummary(_ peer: DiscoveredPeer) -> String {
-        let dot: String
-        if model.connectedPeer == peer.name {
-            dot = "🟢"
-        } else if model.isPaired(peer) {
-            dot = "🔴"
-        } else {
-            dot = "🟠"
+        if model.connectedPeer == peer.name { return "\(peer.name) — Connected" }
+        if let step = model.nextStep(for: peer) { return "\(peer.name) — \(step)" }
+        return peer.name
+    }
+}
+
+
+/// A small coloured dot for a menu row.
+///
+/// Drawn as a non-template `NSImage` rather than a tinted SF Symbol or an emoji. A menu
+/// item's image is treated as a template, so `circle.fill` tinted green arrives grey;
+/// emoji keep their colour but are as tall as the text and far too loud beside it.
+/// Drawing it gives both the colour and the size: a few points across, sitting quietly
+/// to the left of the name.
+enum StatusDot {
+    case connected, offline, unpaired
+
+    private var color: NSColor {
+        switch self {
+        case .connected: return .systemGreen
+        case .offline:   return .systemRed
+        case .unpaired:  return .systemOrange
         }
-        if model.connectedPeer == peer.name { return "\(dot) \(peer.name) — Connected" }
-        if let step = model.nextStep(for: peer) { return "\(dot) \(peer.name) — \(step)" }
-        return "\(dot) \(peer.name)"
+    }
+
+    var image: NSImage {
+        let side: CGFloat = 7
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 0.25, dy: 0.25)).fill()
+            return true
+        }
+        // Not a template: a template image is recoloured to the menu's text colour,
+        // which is exactly the thing being avoided.
+        image.isTemplate = false
+        return image
     }
 }
