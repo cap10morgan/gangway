@@ -24,7 +24,7 @@ enum TransportParameters {
     ///
     /// The tuning below is invisible on loopback but very much live on real Wi-Fi:
     /// `.interactiveVoice` marks packets into the WMM voice access category, which some
-    /// access points handle poorly, `includePeerToPeer` allows AWDL, and the keepalive
+    /// access points handle poorly, and the keepalive
     /// values are tight enough that a power-saving link can look dead. When a
     /// connection works locally but not between two Macs, this isolates the cause
     /// without guesswork.
@@ -59,8 +59,16 @@ enum TransportParameters {
         }
 
         let params = NWParameters(tls: nil, tcp: tcp)
+        // No `includePeerToPeer`. It let Station link two Macs with no router between
+        // them, over AWDL, and the price was paid on every Wi-Fi Mac all the time: AWDL
+        // takes the radio off the network's channel on a schedule, and anything sent
+        // meanwhile waits. Measured on the Wi-Fi MacBook, pinging the wired peer for
+        // 30 s: with Station running the 90th percentile was 528 ms and the worst
+        // 1,133 ms -- the pointer and keyboard freezing together for up to a second at
+        // a time -- and with Station quit, 56 ms and 445 ms, with nothing over 500 ms.
+        // Every Mac Station has actually been used with shares a network, and since
+        // `routableAddress` it dials the network address anyway.
         if !isSimple {
-            params.includePeerToPeer = true
             params.serviceClass = .responsiveData
         }
         return params
@@ -684,8 +692,8 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
     /// resolved the service perfectly; the address it handed back was simply not one
     /// that could be reached, and nothing retried the others.
     ///
-    /// Peer-to-peer stays enabled -- linking two Macs with no router between them is a
-    /// feature -- but the address is ours to choose, so choose one known to route.
+    /// Peer-to-peer has since been turned off entirely (see `TransportParameters`), but
+    /// the address is still ours to choose, so choose one known to route.
     private static func routableAddress(from service: NetService) -> String? {
         var fallback: String?
         for data in service.addresses ?? [] {
