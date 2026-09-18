@@ -109,6 +109,10 @@ public final class SessionController: @unchecked Sendable {
     /// When each peer's link was lost, so the Mac that loses the dial tie-break can
     /// still heal a link the other one is not healing.
     private var linkLostAt: [DeviceID: Date] = [:]
+    /// The peer each of our outgoing dials is for. A dial that fails before the
+    /// handshake has no identity attached, so without this its failure could not be
+    /// traced back to the peer whose cooldown it should end.
+    private var dialing: [ObjectIdentifier: DeviceID] = [:]
     /// When each peer last proved it was still running Station, as opposed to still
     /// holding an open socket. Maintained for every established link, not only the one
     /// being forwarded to; see the heartbeat timer in `start`.
@@ -450,6 +454,12 @@ public final class SessionController: @unchecked Sendable {
             guard let id = peer.deviceID, id != localDeviceID else { continue }
             endpoints[id] = peer.endpoint
             names[id] = peer.name
+            // A Mac that has just launched has never lost a link, so `linkLostAt` was
+            // empty and the late-dial rule for the Mac that loses the tie-break never
+            // applied: it waited for the other Mac, or for someone to push the pointer
+            // across. Having no link to a known peer is the same situation however it
+            // came about.
+            if links[id] == nil, linkLostAt[id] == nil { linkLostAt[id] = Date() }
         }
         lock.unlock()
         redialKnownPeers()
@@ -469,21 +479,11 @@ public final class SessionController: @unchecked Sendable {
         lock.lock()
         let now = Date()
         let targets = endpoints.keys.filter { peer in
-            guard links[peer] == nil else { return false }
-            // One dial at a time. A dial can take `connectionTimeout` to fail, which is
-            // several sweeps' worth.
-            if let last = lastDialAt[peer], now.timeIntervalSince(last) < Self.dialCooldown {
-                return false
-            }
-            // The tie-break stops both Macs dialling at once on a healthy start-up, but
-            // as a *recovery* gate it meant only one of the two could ever repair a
-            // link -- and if that one was the Mac having the problem, nothing repaired
-            // it. So the loser dials too, just later: long enough that the winner's
-            // attempt normally lands first, short enough to still be a recovery.
-            if shouldInitiate(to: peer) { return true }
-            return linkLostAt[peer].map {
-                now.timeIntervalSince($0) > Self.opposingRedialDelay
-            } ?? false
+            Self.shouldDial(hasLink: links[peer] != nil,
+                            winsTieBreak: shouldInitiate(to: peer),
+                            lastDialAt: lastDialAt[peer],
+                            unlinkedSince: linkLostAt[peer],
+                            now: now)
         }
         for peer in targets { lastDialAt[peer] = now }
         lock.unlock()
@@ -520,8 +520,26 @@ public final class SessionController: @unchecked Sendable {
         return true
     }
 
-    private static let dialCooldown: TimeInterval = 12
-    private static let opposingRedialDelay: TimeInterval = 15
+    /// Whether to dial a paired peer right now. Pure, so it can be tested.
+    ///
+    /// - One dial at a time: a dial can take `connectionTimeout` to fail, which is
+    ///   several sweeps' worth. `lastDialAt` is cleared the moment a dial ends, so this
+    ///   only ever holds back a dial that is genuinely still in flight -- a refused one
+    ///   used to block the next attempt for twelve seconds for no reason.
+    /// - The tie-break stops both Macs dialling at once, but as a *recovery* gate it
+    ///   meant only one of the two could ever repair a link. So the loser dials too,
+    ///   once the peer has been unlinked for `opposingRedialDelay`: long enough that the
+    ///   winner's attempt normally lands first, short enough to still be a recovery.
+    static func shouldDial(hasLink: Bool, winsTieBreak: Bool, lastDialAt: Date?,
+                           unlinkedSince: Date?, now: Date) -> Bool {
+        guard !hasLink else { return false }
+        if let lastDialAt, now.timeIntervalSince(lastDialAt) < dialCooldown { return false }
+        if winsTieBreak { return true }
+        return unlinkedSince.map { now.timeIntervalSince($0) > opposingRedialDelay } ?? false
+    }
+
+    static let dialCooldown: TimeInterval = 12
+    static let opposingRedialDelay: TimeInterval = 15
 
     /// Dial a Mac we have not paired with yet, identified only by the fingerprint it
     /// advertises. Its full identity is learned during the handshake.
@@ -546,6 +564,7 @@ public final class SessionController: @unchecked Sendable {
         let pinned = PairingStore.peers().first { $0.id == peer }?.publicKey
         let link = StationLink(endpoint: endpoint, identity: identity,
                                expectedPeerIdentity: pinned)
+        lock.lock(); dialing[ObjectIdentifier(link)] = peer; lock.unlock()
         adopt(link, expectedName: names[peer])
         link.start()
     }
@@ -670,6 +689,9 @@ public final class SessionController: @unchecked Sendable {
     private func drop(_ link: StationLink, id: DeviceID?, reason: String?) {
         lock.lock()
         pending.removeValue(forKey: ObjectIdentifier(link))
+        // Whatever happened to it, this dial is no longer in flight.
+        let dialedPeer = dialing.removeValue(forKey: ObjectIdentifier(link))
+        if let dialedPeer { lastDialAt[dialedPeer] = nil }
         var wasActive = false
         // Only the link that is *currently* the peer's link may clear that peer's state.
         // Without this check a stale duplicate dying tore down the live connection's
@@ -692,6 +714,7 @@ public final class SessionController: @unchecked Sendable {
             linkLostAt[id] = Date()
         }
         let name = id.flatMap { names[$0] } ?? "a Mac"
+        let dialedName = dialedPeer.flatMap { names[$0] }
         lock.unlock()
 
         // Take control back. Clearing the link alone left the capture forwarding to a
@@ -704,8 +727,18 @@ public final class SessionController: @unchecked Sendable {
             }
             onEvent?(.controlMoved(remote: false, peer: nil))
         }
-        guard isCurrent || id == nil else {
-            Self.debugLog("stale link to \(name) closed; live link unaffected")
+        guard isCurrent else {
+            if id == nil {
+                // A link that failed before the handshake never connected to anyone,
+                // so there is nothing to report as disconnected. It used to be reported
+                // anyway, as "a Mac", and the app cleared its connection state and who
+                // held control in response -- wiping out a live connection's status
+                // because an unrelated dial had failed.
+                Self.debugLog("dial to \(dialedName ?? "a Mac") failed"
+                            + (reason.map { ": \($0)" } ?? ""))
+            } else {
+                Self.debugLog("stale link to \(name) closed; live link unaffected")
+            }
             return
         }
         Self.debugLog("peer \(name) disconnected\(reason.map { ": \($0)" } ?? "")"
