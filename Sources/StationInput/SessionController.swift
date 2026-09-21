@@ -336,6 +336,7 @@ public final class SessionController: @unchecked Sendable {
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval,
                                               repeats: true) { [weak self] _ in
             self?.pingPeers()
+            self?.noteSecureInputState()
         }
     }
 
@@ -399,6 +400,37 @@ public final class SessionController: @unchecked Sendable {
             link.send(.heartbeat, Data([Self.heartbeatRequest]))
         }
     }
+
+    /// Record secure input coming and going, whatever this Mac is doing.
+    ///
+    /// The warning is only raised while forwarding, which is right -- keystrokes being
+    /// withheld matters only when they were meant to go somewhere else -- but detection
+    /// was on that same path, so a Mac being driven never looked, and a Mac sitting idle
+    /// never looked either. When the question is "why did I never see a warning", the
+    /// log could not distinguish "it never happened", "it happened while not
+    /// forwarding" and "it happened and the warning failed". This only writes to the
+    /// log: no event, so nothing appears in the menu or on screen.
+    private func noteSecureInputState() {
+        let flag = SecureInput.isEnabled
+        let blocked = SecureInput.appearsToBlockKeyboard(
+            lastKeyDownAtTap: capture?.lastKeyDownAtTap)
+        let forwarding: Bool
+        if case .forwarding = capture?.mode { forwarding = true } else { forwarding = false }
+
+        if flag != lastSecureInputFlag {
+            lastSecureInputFlag = flag
+            Self.debugLog("secure input flag \(flag ? "on" : "off") "
+                        + "(forwarding: \(forwarding))")
+        }
+        if blocked != lastSecureInputBlocking {
+            lastSecureInputBlocking = blocked
+            Self.debugLog("secure input \(blocked ? "is withholding keystrokes" : "no longer withholding") "
+                        + "(forwarding: \(forwarding))")
+        }
+    }
+
+    private var lastSecureInputFlag = false
+    private var lastSecureInputBlocking = false
 
     /// Frequent enough to keep an idle link warm and to notice a peer going away
     /// well inside `heartbeatDeadline`.
