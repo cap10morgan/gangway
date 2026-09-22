@@ -35,7 +35,7 @@ final class SecureInputPanel {
             return
         }
 
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 220),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 90),
                             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         panel.titleVisibility = .hidden
@@ -52,7 +52,7 @@ final class SecureInputPanel {
 
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
-            panel.setFrameOrigin(CGPoint(x: frame.midX - 190, y: frame.maxY - 300))
+            panel.setFrameOrigin(CGPoint(x: frame.midX - 160, y: frame.maxY - 160))
         }
         panel.orderFrontRegardless()
         window = panel
@@ -71,58 +71,31 @@ struct SecureInputWarningView: View {
     /// being driven it is "the keys you are typing are not arriving".
     var onThisMac: Bool = true
 
+    /// Two lines, because this is read at a glance or not at all.
+    ///
+    /// It used to carry an explanation, a reassurance about passwords, three suggested
+    /// fixes and a footer. All true, none of it readable in the seconds the warning is
+    /// up while the user is mid-keystroke and looking at the other Mac. What is left is
+    /// what has to be understood immediately: keys are not arriving, and why.
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "keyboard.badge.exclamationmark")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(onThisMac
                      ? "Keystrokes aren't reaching \(peer ?? "the other Mac")"
-                     : "\(peer ?? "The other Mac") can't send keystrokes right now")
+                     : "\(peer ?? "The other Mac") can't send keystrokes")
                     .font(.headline)
-            } icon: {
-                Image(systemName: "keyboard.badge.exclamationmark")
-                    .foregroundStyle(.orange)
+                Text(onThisMac
+                     ? "Secure Keyboard Entry is on here."
+                     : "Secure Keyboard Entry is on there.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-
-            Text(onThisMac
-                 ? "Something on this Mac has Secure Keyboard Entry turned on, which "
-                   + "stops Station from reading the keyboard. The pointer and trackpad "
-                   + "still work normally."
-                 : "Secure Keyboard Entry is on over there, so what you type stays on "
-                   + "that Mac. The pointer and trackpad still work normally.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            // Naming the frontmost app was a guess dressed as a finding: macOS exposes
-            // no way to ask who holds secure input, and the answer is nearly always a
-            // password prompt the user is already looking at, so the name added nothing
-            // and risked sending someone to quit something innocent.
-            Text(onThisMac
-                 ? "Nothing you type is being sent to the other Mac, so a password typed "
-                   + "now stays on this one — Station never sees these keystrokes."
-                 : "A password typed now stays on that Mac — Station never sees these "
-                   + "keystrokes.")
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-
-            // The fixes are all things to do on the Mac holding the keyboard, so they
-            // are only shown there. On the other screen they would be instructions for
-            // a machine the reader is not looking at.
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(onThisMac ? SecureInput.quickFixes : [], id: \.self) { fix in
-                    Text("• \(fix)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Text("This closes itself once the keyboard is free.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            Spacer(minLength: 0)
         }
-        .padding(20)
-        .frame(width: 380, alignment: .leading)
+        .padding(14)
+        .frame(width: 320, alignment: .leading)
     }
 }
 

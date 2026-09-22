@@ -68,15 +68,6 @@ public enum SecureInput {
     /// mean anything.
     private static let typingWindow: TimeInterval = 3
 
-    /// The same list, trimmed for a panel the user reads while their keyboard is
-    /// half-broken. Ordered by how likely it is to be the answer, and phrased as
-    /// things to go and do rather than things that are true.
-    public static let quickFixes = [
-        "Finish or dismiss the password prompt — an unlocking password manager is the usual cause",
-        "Click out of any password field",
-        "Ghostty, Terminal or iTerm2: turn off Secure Keyboard Entry in the app menu",
-    ]
-
     /// The applications that habitually enable it, worth checking by hand.
     ///
     /// Ghostty is listed first because it enables secure input *automatically* at
