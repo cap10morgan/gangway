@@ -463,14 +463,22 @@ final class AppModel {
         startSecureInputVerification()
     }
 
-    /// Long enough for an ordinary unlock to finish unremarked.
-    private static let secureInputWarningDelay: TimeInterval = 5
+    /// Long enough to ignore a momentary flicker, short enough to catch the real
+    /// episodes.
+    ///
+    /// This was five seconds, chosen so an ordinary password unlock finished unremarked.
+    /// But the episodes that actually swallow keystrokes here last four to six seconds,
+    /// so five seconds silenced the very thing the warning exists for. Two catches
+    /// those, at the price of a brief notice during some unlocks -- which the minimum
+    /// time on screen below then holds for six seconds. That is the deliberate trade:
+    /// being told late is worse than being told about something harmless.
+    private static let secureInputWarningDelay: TimeInterval = 2
     /// Once up, stay up this long even if the condition clears.
     ///
-    /// Secure input episodes here run four to six seconds, so a warning that waits five
-    /// and then leaves the instant the block lifts was on screen for about one second --
-    /// on the Mac the user was not looking at. Long enough to be logged, too short to
-    /// be read, which is indistinguishable from never appearing at all.
+    /// Secure input episodes here run four to six seconds, so a warning that leaves the
+    /// instant the block lifts was on screen for about one second -- on the Mac the user
+    /// was not looking at. Long enough to be logged, too short to be read, which is
+    /// indistinguishable from never appearing at all.
     private static let secureInputWarningMinimumOnScreen: TimeInterval = 6
     private var secureInputPanelShownAt: Date?
     private var secureInputHideTimer: Timer?
