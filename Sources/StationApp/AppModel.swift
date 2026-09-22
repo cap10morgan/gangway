@@ -458,12 +458,50 @@ final class AppModel {
             return
         }
         SessionController.log("showing the secure input warning")
+        secureInputPanelAppeared()
         secureInputPanel.show(peer: connectedPeer, holder: block.holder)
         startSecureInputVerification()
     }
 
     /// Long enough for an ordinary unlock to finish unremarked.
     private static let secureInputWarningDelay: TimeInterval = 5
+    /// Once up, stay up this long even if the condition clears.
+    ///
+    /// Secure input episodes here run four to six seconds, so a warning that waits five
+    /// and then leaves the instant the block lifts was on screen for about one second --
+    /// on the Mac the user was not looking at. Long enough to be logged, too short to
+    /// be read, which is indistinguishable from never appearing at all.
+    private static let secureInputWarningMinimumOnScreen: TimeInterval = 6
+    private var secureInputPanelShownAt: Date?
+    private var secureInputHideTimer: Timer?
+
+    private func secureInputPanelAppeared() {
+        secureInputHideTimer?.invalidate()
+        secureInputHideTimer = nil
+        secureInputPanelShownAt = Date()
+    }
+
+    /// Hide it now, or when it has been readable for long enough.
+    private func hideSecureInputPanelWhenRead() {
+        guard let shownAt = secureInputPanelShownAt else { return hideSecureInputPanelNow() }
+        let remaining = Self.secureInputWarningMinimumOnScreen
+            - Date().timeIntervalSince(shownAt)
+        guard remaining > 0 else { return hideSecureInputPanelNow() }
+        guard secureInputHideTimer == nil else { return }
+        SessionController.log(String(format: "keyboard free again; holding the warning %.1fs longer",
+                                     remaining))
+        secureInputHideTimer = Timer.scheduledTimer(withTimeInterval: remaining,
+                                                    repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.hideSecureInputPanelNow() }
+        }
+    }
+
+    private func hideSecureInputPanelNow() {
+        secureInputHideTimer?.invalidate()
+        secureInputHideTimer = nil
+        secureInputPanelShownAt = nil
+        secureInputPanel.hide()
+    }
     private var secureInputWarningTimer: Timer?
     private var peerKeyboardWarningTimer: Timer?
     private var peerKeyboardBlockedBy: String?
@@ -486,6 +524,7 @@ final class AppModel {
                     return
                 }
                 SessionController.log("showing the warning about \(name)'s keyboard")
+                self.secureInputPanelAppeared()
                 self.secureInputPanel.show(peer: name, holder: nil, onThisMac: false)
             }
         }
@@ -495,7 +534,7 @@ final class AppModel {
         peerKeyboardBlockedBy = nil
         peerKeyboardWarningTimer?.invalidate()
         peerKeyboardWarningTimer = nil
-        secureInputPanel.hide()
+        hideSecureInputPanelWhenRead()
     }
 
     /// Keep checking for as long as the warning is up, and take it down the moment the
@@ -515,7 +554,10 @@ final class AppModel {
                     self.keyboardBlockedBy = nil
                     self.secureInputWarningTimer?.invalidate()
                     self.secureInputWarningTimer = nil
-                    self.secureInputPanel.hide()
+                    // Control coming home ends it outright; the block merely lifting
+                    // leaves the notice up long enough to have been read.
+                    self.controlIsRemote ? self.hideSecureInputPanelWhenRead()
+                                         : self.hideSecureInputPanelNow()
                     self.secureInputVerifier?.invalidate()
                     self.secureInputVerifier = nil
                     return
@@ -562,7 +604,7 @@ final class AppModel {
             keyboardBlockedBy = nil
             secureInputWarningTimer?.invalidate()
             secureInputWarningTimer = nil
-            secureInputPanel.hide()
+            hideSecureInputPanelWhenRead()
             // Clear it rather than leaving a stale complaint about a fixed problem.
             if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
         case .peerKeyboardBlocked(let name, let blocked):
