@@ -451,7 +451,13 @@ final class AppModel {
 
     private func showSecureInputWarningNow() {
         secureInputWarningTimer = nil
-        guard controlIsRemote, let block = keyboardBlockedBy, SecureInput.isEnabled else { return }
+        guard controlIsRemote, let block = keyboardBlockedBy, SecureInput.isEnabled else {
+            SessionController.log("secure input warning dropped after the wait "
+                + "(control is remote: \(controlIsRemote), still blocked: "
+                + "\(keyboardBlockedBy != nil), flag: \(SecureInput.isEnabled))")
+            return
+        }
+        SessionController.log("showing the secure input warning")
         secureInputPanel.show(peer: connectedPeer, holder: block.holder)
         startSecureInputVerification()
     }
@@ -473,7 +479,13 @@ final class AppModel {
             Task { @MainActor in
                 guard let self else { return }
                 self.peerKeyboardWarningTimer = nil
-                guard self.isBeingControlled, let name = self.peerKeyboardBlockedBy else { return }
+                guard self.isBeingControlled, let name = self.peerKeyboardBlockedBy else {
+                    SessionController.log("peer keyboard warning dropped after the wait "
+                        + "(being controlled: \(self.isBeingControlled), still blocked: "
+                        + "\(self.peerKeyboardBlockedBy != nil))")
+                    return
+                }
+                SessionController.log("showing the warning about \(name)'s keyboard")
                 self.secureInputPanel.show(peer: name, holder: nil, onThisMac: false)
             }
         }
@@ -561,6 +573,8 @@ final class AppModel {
                 clearPeerKeyboardWarning()
             }
         case .keyboardBlocked(let holder):
+            SessionController.log("keyboard reported blocked here "
+                                + "(control is remote: \(controlIsRemote))")
             keyboardBlockedBy = .init(holder: holder)
             lastError = "Secure Keyboard Entry is on, so keystrokes cannot be sent to "
                       + "the other Mac. A password prompt is the usual cause and clears "

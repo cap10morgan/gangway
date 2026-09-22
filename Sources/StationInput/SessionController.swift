@@ -196,6 +196,10 @@ public final class SessionController: @unchecked Sendable {
         return logs.appendingPathComponent("Station.log")
     }()
 
+    /// For the app layer, which has no log of its own and is where the decision to
+    /// show or withhold a warning is actually made.
+    public static func log(_ line: String) { debugLog(line) }
+
     /// Appends rather than printing: the app writes nowhere a user can see.
     static func debugLog(_ line: String) {
         guard debugEvents else { return }
@@ -903,6 +907,8 @@ public final class SessionController: @unchecked Sendable {
             guard let peer,
                   let state = try? JSONDecoder().decode(KeyboardState.self, from: payload)
             else { return }
+            Self.debugLog("\(names[peer] ?? "peer") reports its keyboard "
+                        + (state.blocked ? "is being withheld" : "is free again"))
             onEvent?(.peerKeyboardBlocked(name: names[peer] ?? "The other Mac",
                                           blocked: state.blocked))
 
