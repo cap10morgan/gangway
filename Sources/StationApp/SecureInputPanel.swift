@@ -94,9 +94,14 @@ struct SecureInputWarningView: View {
                     .foregroundStyle(.secondary)
                 // One suggestion, not a list: naming the most likely cause is worth the
                 // line it costs, because "Secure Keyboard Entry" means nothing to
-                // someone who has never turned it on deliberately.
-                Text("**How to fix:** If any app is prompting for a password, try "
-                     + "entering the password or closing the app")
+                // someone who has never turned it on deliberately. On the Mac being
+                // typed at, the fix is on the other one, so it says which.
+                Text(onThisMac
+                     ? "**How to fix:** If any app is prompting for a password, try "
+                       + "entering the password or closing the app"
+                     : "**How to fix:** On \(peer ?? "that Mac"), if any app is "
+                       + "prompting for a password, try entering the password or "
+                       + "closing the app")
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             }
