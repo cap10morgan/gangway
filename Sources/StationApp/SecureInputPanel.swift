@@ -35,7 +35,7 @@ final class SecureInputPanel {
             return
         }
 
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 90),
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 130),
                             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         panel.titleVisibility = .hidden
@@ -52,7 +52,7 @@ final class SecureInputPanel {
 
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
-            panel.setFrameOrigin(CGPoint(x: frame.midX - 160, y: frame.maxY - 160))
+            panel.setFrameOrigin(CGPoint(x: frame.midX - 170, y: frame.maxY - 200))
         }
         panel.orderFrontRegardless()
         window = panel
@@ -76,7 +76,8 @@ struct SecureInputWarningView: View {
     /// It used to carry an explanation, a reassurance about passwords, three suggested
     /// fixes and a footer. All true, none of it readable in the seconds the warning is
     /// up while the user is mid-keystroke and looking at the other Mac. What is left is
-    /// what has to be understood immediately: keys are not arriving, and why.
+    /// what has to be understood immediately: keys are not arriving, why, and the one
+    /// thing most likely to end it.
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "keyboard.badge.exclamationmark")
@@ -91,11 +92,18 @@ struct SecureInputWarningView: View {
                      : "Secure Keyboard Entry is on there.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                // One suggestion, not a list: naming the most likely cause is worth the
+                // line it costs, because "Secure Keyboard Entry" means nothing to
+                // someone who has never turned it on deliberately.
+                Text("**How to fix:** If any app is prompting for a password, try "
+                     + "entering the password or closing the app")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
         .padding(14)
-        .frame(width: 320, alignment: .leading)
+        .frame(width: 340, alignment: .leading)
     }
 }
 
