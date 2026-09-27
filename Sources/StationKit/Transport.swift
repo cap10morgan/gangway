@@ -619,14 +619,34 @@ public final class StationListener: @unchecked Sendable {
 public final class PeerBrowser: NSObject, @unchecked Sendable {
 
     private let browser = NetServiceBrowser()
-    /// Services must be retained while resolving or the resolve is abandoned.
+    /// Services must be retained while resolving or the resolve is abandoned, and kept
+    /// afterwards so they can be resolved again.
     private var resolving: [NetService] = []
-    /// Keyed by host and port rather than service name. Bonjour renames a re-registered
-    /// service ("Mac (2)") while the dead record lingers, so keying by name would list
-    /// the same Mac twice and invite the user to pick the stale one.
+    /// Keyed by the peer's identity where it advertises one, and by address only as a
+    /// fallback. Keying by address alone meant a Mac that changed address appeared
+    /// twice -- once at the address it no longer has -- and which of the two won was
+    /// then down to dictionary order.
+    ///
+    /// Not keyed by service name: Bonjour renames a re-registered service ("Mac (2)")
+    /// while the dead record lingers, which would list the same Mac twice and invite
+    /// the user to pick the stale one.
     private var found: [String: DiscoveredPeer] = [:]
 
     private static func key(host: String, port: UInt16) -> String { "\(host):\(port)" }
+    private static func key(for peer: DiscoveredPeer) -> String {
+        peer.deviceID ?? key(host: peer.host, port: peer.port)
+    }
+
+    /// Re-resolve every known service on this interval.
+    ///
+    /// A service is resolved once, when Bonjour first reports it, and the address is
+    /// cached from then on. That was survivable while the cached value was a hostname,
+    /// which macOS re-resolved on every connection; since Station started dialling the
+    /// numeric address, a Mac that gets a new address from DHCP becomes unreachable and
+    /// stays that way, because its Bonjour record never went away to trigger a fresh
+    /// resolve. Station dials the dead address forever while `ping` works fine.
+    private static let reresolveInterval: TimeInterval = 30
+    private var reresolveTimer: Timer?
     private let lock = NSLock()
 
     public var onPeersChanged: (@Sendable ([DiscoveredPeer]) -> Void)?
@@ -639,10 +659,27 @@ public final class PeerBrowser: NSObject, @unchecked Sendable {
     /// Must be called from a thread with a live run loop; the app's main thread is fine.
     public func start() {
         browser.searchForServices(ofType: stationBonjourType, inDomain: "local.")
+        reresolveTimer?.invalidate()
+        reresolveTimer = Timer.scheduledTimer(withTimeInterval: Self.reresolveInterval,
+                                              repeats: true) { [weak self] _ in
+            self?.reresolveKnownServices()
+        }
+    }
+
+    private func reresolveKnownServices() {
+        lock.lock()
+        let services = resolving
+        lock.unlock()
+        for service in services {
+            service.delegate = self
+            service.resolve(withTimeout: 5)
+        }
     }
 
     public func stop() {
         browser.stop()
+        reresolveTimer?.invalidate()
+        reresolveTimer = nil
         lock.lock()
         resolving.removeAll()
         found.removeAll()
@@ -663,7 +700,7 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
     public func netServiceBrowser(_ browser: NetServiceBrowser,
                                   didFind service: NetService, moreComing: Bool) {
         lock.lock()
-        resolving.append(service)
+        if !resolving.contains(where: { $0 === service }) { resolving.append(service) }
         lock.unlock()
         service.delegate = self
         service.resolve(withTimeout: 5)
@@ -674,7 +711,7 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         lock.lock()
         // The removed service may not have resolved, so match on name as well.
         found = found.filter { $0.value.name != service.name }
-        resolving.removeAll { $0 === service }
+        resolving.removeAll { $0 === service || $0.name == service.name }
         lock.unlock()
         if !moreComing { publish() }
     }
@@ -734,7 +771,8 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         lock.lock()
         // Prefer the shortest name for a given endpoint: Bonjour's "(2)" suffix marks a
         // re-registration of the same Mac, not a different one.
-        let key = Self.key(host: host, port: peer.port)
+        let key = Self.key(for: peer)
+        let changed = found[key] != peer
         if let existing = found[key], existing.name.count <= peer.name.count {
             found[key] = DiscoveredPeer(name: existing.name, host: peer.host, port: peer.port,
                                         deviceID: peer.deviceID,
@@ -742,9 +780,10 @@ extension PeerBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
         } else {
             found[key] = peer
         }
-        resolving.removeAll { $0 === service }
         lock.unlock()
-        publish()
+        // Re-resolving happens on a timer, so publishing an unchanged result every time
+        // would hand the session the same work to redo twice a minute.
+        if changed { publish() }
     }
 
     public func netService(_ service: NetService, didNotResolve errorDict: [String: NSNumber]) {
