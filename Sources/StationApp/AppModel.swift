@@ -436,7 +436,7 @@ final class AppModel {
     /// we are actually trying to forward it somewhere.
     private func showSecureInputWarningIfNeeded() {
         guard controlIsRemote, keyboardBlockedBy != nil else { return }
-        guard secureInputWarningTimer == nil else { return }
+        guard !secureInputWarningDismissed, secureInputWarningTimer == nil else { return }
         // Wait before saying anything. The detector only fires while someone is
         // actually typing, which means it fires reliably during a password unlock --
         // the one case where secure input is doing its job and the user is already
@@ -459,56 +459,62 @@ final class AppModel {
         }
         SessionController.log("showing the secure input warning")
         secureInputPanelAppeared()
-        secureInputPanel.show(peer: connectedPeer, holder: block.holder)
+        secureInputPanel.show(peer: connectedPeer, holder: block.holder) { [weak self] in
+            self?.dismissSecureInputWarning()
+        }
         startSecureInputVerification()
     }
 
-    /// Long enough to ignore a momentary flicker, short enough to catch the real
-    /// episodes.
+    /// Just long enough to ignore a flicker.
     ///
-    /// This was five seconds, chosen so an ordinary password unlock finished unremarked.
-    /// But the episodes that actually swallow keystrokes here last four to six seconds,
-    /// so five seconds silenced the very thing the warning exists for. Two catches
-    /// those, at the price of a brief notice during some unlocks -- which the minimum
-    /// time on screen below then holds for six seconds. That is the deliberate trade:
-    /// being told late is worse than being told about something harmless.
-    private static let secureInputWarningDelay: TimeInterval = 2
-    /// Once up, stay up this long even if the condition clears.
+    /// This has been five seconds, then two. The wait existed so an ordinary password
+    /// unlock finished unremarked, but it also silenced the episodes the warning exists
+    /// for, which is the worse failure of the two. Now the warning appears almost at
+    /// once and stays until dismissed -- with one exception, below, so that a blip does
+    /// not leave a panel to tidy up after.
+    private static let secureInputWarningDelay: TimeInterval = 0.75
+    /// A block that clears within this long of the warning appearing takes the warning
+    /// with it. Anything longer stays until the user closes it.
     ///
-    /// Secure input episodes here run four to six seconds, so a warning that leaves the
-    /// instant the block lifts was on screen for about one second -- on the Mac the user
-    /// was not looking at. Long enough to be logged, too short to be read, which is
-    /// indistinguishable from never appearing at all.
-    private static let secureInputWarningMinimumOnScreen: TimeInterval = 6
+    /// The two requirements pull against each other: appearing quickly means appearing
+    /// during password unlocks, and staying until closed means each of those leaves a
+    /// panel to dismiss by hand. This is the seam between them -- a blip cleans up
+    /// after itself, a real episode waits to be read.
+    private static let secureInputBlipWindow: TimeInterval = 3
     private var secureInputPanelShownAt: Date?
-    private var secureInputHideTimer: Timer?
+    /// Set when the user closes the warning, so it does not spring straight back while
+    /// the same episode is still going.
+    private var secureInputWarningDismissed = false
 
     private func secureInputPanelAppeared() {
-        secureInputHideTimer?.invalidate()
-        secureInputHideTimer = nil
         secureInputPanelShownAt = Date()
     }
 
-    /// Hide it now, or when it has been readable for long enough.
-    private func hideSecureInputPanelWhenRead() {
+    /// The block has lifted: take the warning down only if it was a blip.
+    private func hideSecureInputPanelIfBlip() {
+        secureInputWarningDismissed = false
         guard let shownAt = secureInputPanelShownAt else { return hideSecureInputPanelNow() }
-        let remaining = Self.secureInputWarningMinimumOnScreen
-            - Date().timeIntervalSince(shownAt)
-        guard remaining > 0 else { return hideSecureInputPanelNow() }
-        guard secureInputHideTimer == nil else { return }
-        SessionController.log(String(format: "keyboard free again; holding the warning %.1fs longer",
-                                     remaining))
-        secureInputHideTimer = Timer.scheduledTimer(withTimeInterval: remaining,
-                                                    repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.hideSecureInputPanelNow() }
+        guard Date().timeIntervalSince(shownAt) < Self.secureInputBlipWindow else {
+            SessionController.log("keyboard free again; leaving the warning up to be closed")
+            return
         }
+        hideSecureInputPanelNow()
     }
 
+    /// Also clears any dismissal: every other route here -- control coming home, the
+    /// peer disconnecting, Station stopping -- ends the situation the user dismissed a
+    /// warning about, and the next one should be free to appear.
     private func hideSecureInputPanelNow() {
-        secureInputHideTimer?.invalidate()
-        secureInputHideTimer = nil
         secureInputPanelShownAt = nil
+        secureInputWarningDismissed = false
         secureInputPanel.hide()
+    }
+
+    /// Closing it is the user saying they have read it.
+    private func dismissSecureInputWarning() {
+        SessionController.log("secure input warning closed by the user")
+        hideSecureInputPanelNow()
+        secureInputWarningDismissed = true
     }
     private var secureInputWarningTimer: Timer?
     private var peerKeyboardWarningTimer: Timer?
@@ -519,7 +525,7 @@ final class AppModel {
     /// seconds should never have been mentioned.
     private func showPeerKeyboardWarningIfNeeded() {
         guard isBeingControlled, peerKeyboardBlockedBy != nil else { return }
-        guard peerKeyboardWarningTimer == nil else { return }
+        guard !secureInputWarningDismissed, peerKeyboardWarningTimer == nil else { return }
         peerKeyboardWarningTimer = Timer.scheduledTimer(
             withTimeInterval: Self.secureInputWarningDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -533,7 +539,9 @@ final class AppModel {
                 }
                 SessionController.log("showing the warning about \(name)'s keyboard")
                 self.secureInputPanelAppeared()
-                self.secureInputPanel.show(peer: name, holder: nil, onThisMac: false)
+                self.secureInputPanel.show(peer: name, holder: nil, onThisMac: false) {
+                    [weak self] in self?.dismissSecureInputWarning()
+                }
             }
         }
     }
@@ -542,7 +550,7 @@ final class AppModel {
         peerKeyboardBlockedBy = nil
         peerKeyboardWarningTimer?.invalidate()
         peerKeyboardWarningTimer = nil
-        hideSecureInputPanelWhenRead()
+        hideSecureInputPanelIfBlip()
     }
 
     /// Keep checking for as long as the warning is up, and take it down the moment the
@@ -564,7 +572,9 @@ final class AppModel {
                     self.secureInputWarningTimer = nil
                     // Control coming home ends it outright; the block merely lifting
                     // leaves the notice up long enough to have been read.
-                    self.controlIsRemote ? self.hideSecureInputPanelWhenRead()
+                    // Control coming home ends it outright; the block merely lifting
+                    // leaves a real episode's notice up to be closed.
+                    self.controlIsRemote ? self.hideSecureInputPanelIfBlip()
                                          : self.hideSecureInputPanelNow()
                     self.secureInputVerifier?.invalidate()
                     self.secureInputVerifier = nil
@@ -612,7 +622,7 @@ final class AppModel {
             keyboardBlockedBy = nil
             secureInputWarningTimer?.invalidate()
             secureInputWarningTimer = nil
-            hideSecureInputPanelWhenRead()
+            hideSecureInputPanelIfBlip()
             // Clear it rather than leaving a stale complaint about a fixed problem.
             if lastError?.contains("Secure Keyboard Entry") == true { lastError = nil }
         case .peerKeyboardBlocked(let name, let blocked):

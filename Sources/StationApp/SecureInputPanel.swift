@@ -18,28 +18,40 @@ import StationInput
 /// then reappear. And Station is forwarding at the moment this shows, so the pointer is
 /// on the other Mac: a modal nobody can reach is a modal that traps the session.
 ///
-/// For the same reason there is no dismiss button. Nothing here is clickable, because
-/// while this is on screen the local pointer is somewhere else entirely. It goes away
-/// on its own when secure input is released or when control comes back.
+/// It does have a close button. The pointer is on the other Mac while this is up, but
+/// that Mac is exactly where the copy of this panel showing "can't send keystrokes"
+/// appears, so the pointer is always on one of the two screens showing it. A notice
+/// that vanishes on its own is one the user has to catch; this one waits.
 @MainActor
 final class SecureInputPanel {
 
     private var window: NSPanel?
+    private var hosting: NSHostingController<SecureInputWarningView>?
 
-    func show(peer: String?, holder: String?, onThisMac: Bool = true) {
-        let view = SecureInputWarningView(peer: peer, holder: holder, onThisMac: onThisMac)
-        if let window {
-            (window.contentViewController as? NSHostingController<SecureInputWarningView>)?
-                .rootView = view
+    func show(peer: String?, holder: String?, onThisMac: Bool = true,
+              onClose: @escaping () -> Void) {
+        let view = SecureInputWarningView(peer: peer, holder: holder,
+                                          onThisMac: onThisMac, onClose: onClose)
+        if let window, let hosting {
+            hosting.rootView = view
+            window.setContentSize(hosting.view.fittingSize)
             window.orderFrontRegardless()
             return
         }
 
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 130),
-                            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+        let controller = NSHostingController(rootView: view)
+        // Borderless: the panel used to be `.titled` with the title hidden and the bar
+        // made transparent, which still reserved the bar's height and left the content
+        // sitting below a blank strip with a square-cornered window behind it. The view
+        // draws its own rounded material background instead.
+        let panel = NSPanel(contentRect: .zero,
+                            styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
+        panel.contentViewController = controller
+        panel.setContentSize(controller.view.fittingSize)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         // Above ordinary windows, and above full-screen apps: the terminal that is
         // holding secure input is very often the full-screen window in front.
@@ -48,14 +60,16 @@ final class SecureInputPanel {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.becomesKeyOnlyIfNeeded = true
-        panel.contentViewController = NSHostingController(rootView: view)
 
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
-            panel.setFrameOrigin(CGPoint(x: frame.midX - 170, y: frame.maxY - 200))
+            let size = panel.frame.size
+            panel.setFrameOrigin(CGPoint(x: frame.midX - size.width / 2,
+                                         y: frame.maxY - size.height - 40))
         }
         panel.orderFrontRegardless()
         window = panel
+        hosting = controller
     }
 
     func hide() {
@@ -70,23 +84,27 @@ struct SecureInputWarningView: View {
     /// wording on the two screens: here it is "your keyboard is held", and on the Mac
     /// being driven it is "the keys you are typing are not arriving".
     var onThisMac: Bool = true
+    var onClose: () -> Void = {}
 
-    /// Two lines, because this is read at a glance or not at all.
+    /// Three lines and a close button, because this is read at a glance or not at all.
     ///
     /// It used to carry an explanation, a reassurance about passwords, three suggested
-    /// fixes and a footer. All true, none of it readable in the seconds the warning is
-    /// up while the user is mid-keystroke and looking at the other Mac. What is left is
-    /// what has to be understood immediately: keys are not arriving, why, and the one
-    /// thing most likely to end it.
+    /// fixes and a footer. All true, none of it readable in the seconds the warning was
+    /// up. What is left is what has to be understood immediately: keys are not
+    /// arriving, why, and the one thing most likely to end it.
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: "keyboard.badge.exclamationmark")
+                .font(.title2)
                 .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 3) {
+                .frame(height: 20)
+
+            VStack(alignment: .leading, spacing: 5) {
                 Text(onThisMac
                      ? "Keystrokes aren't reaching \(peer ?? "the other Mac")"
                      : "\(peer ?? "The other Mac") can't send keystrokes")
                     .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(onThisMac
                      ? "Secure Keyboard Entry is on here."
                      : "Secure Keyboard Entry is on there.")
@@ -103,12 +121,23 @@ struct SecureInputWarningView: View {
                        + "prompting for a password, try entering the password or "
                        + "closing the app")
                     .font(.callout)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(5)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close")
         }
-        .padding(14)
-        .frame(width: 340, alignment: .leading)
+        .padding(16)
+        .frame(width: 360, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.regularMaterial))
     }
 }
 
