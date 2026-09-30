@@ -114,12 +114,16 @@ struct SecureInputWarningView: View {
                 // line it costs, because "Secure Keyboard Entry" means nothing to
                 // someone who has never turned it on deliberately. On the Mac being
                 // typed at, the fix is on the other one, so it says which.
-                Text(onThisMac
-                     ? "**How to fix:** If any app is prompting for a password, try "
-                       + "entering the password or closing the app"
-                     : "**How to fix:** On \(peer ?? "that Mac"), if any app is "
-                       + "prompting for a password, try entering the password or "
-                       + "closing the app")
+                // Two `Text`s joined, not markdown in one. SwiftUI parses markdown only
+                // in string *literals*; these are built by concatenation and
+                // interpolation, so `**How to fix:**` arrived on screen with its
+                // asterisks showing.
+                (Text("How to fix: ").bold()
+                 + Text(onThisMac
+                        ? "If any app is prompting for a password, try entering the "
+                          + "password or closing the app"
+                        : "On \(peer ?? "that Mac"), if any app is prompting for a "
+                          + "password, try entering the password or closing the app"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
