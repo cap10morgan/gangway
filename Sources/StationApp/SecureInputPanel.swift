@@ -129,12 +129,15 @@ struct SecureInputWarningView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // Shaped like the close button on a system notification: a small filled
+            // circle with a heavy glyph, rather than a bare glyph floating in padding.
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .padding(5)
-                    .contentShape(Rectangle())
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(.quaternary))
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .help("Close")
