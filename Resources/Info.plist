@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Station</string>
+    <string>Gangway</string>
     <key>CFBundleDisplayName</key>
-    <string>Station</string>
+    <string>Gangway</string>
     <key>CFBundleIdentifier</key>
-    <string>com.station.Station</string>
+    <string>com.timetraveltoaster.Gangway</string>
     <key>CFBundleExecutable</key>
-    <string>StationApp</string>
+    <string>GangwayApp</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -26,10 +26,10 @@
     <!-- Required from macOS 15. Without the usage string the local network prompt
          never appears and Bonjour discovery silently returns nothing. -->
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Station finds and connects to your other Macs on this network to share your keyboard and trackpad.</string>
+    <string>Gangway finds and connects to your other Macs on this network to share your keyboard and trackpad.</string>
     <key>NSBonjourServices</key>
     <array>
-        <string>_station._tcp</string>
+        <string>_gangway._tcp</string>
     </array>
 </dict>
 </plist>

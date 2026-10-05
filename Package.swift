@@ -2,18 +2,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "Station",
+    name: "Gangway",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "StationKit", targets: ["StationKit"]),
-        .library(name: "StationInput", targets: ["StationInput"]),
+        .library(name: "GangwayKit", targets: ["GangwayKit"]),
+        .library(name: "GangwayInput", targets: ["GangwayInput"]),
     ],
     targets: [
-        .target(name: "StationKit"),
-        .target(name: "StationInput", dependencies: ["StationKit"]),
-        .executableTarget(name: "stationctl", dependencies: ["StationKit", "StationInput"]),
-        .executableTarget(name: "StationApp", dependencies: ["StationKit", "StationInput"]),
-        .testTarget(name: "StationKitTests", dependencies: ["StationKit"]),
-        .testTarget(name: "StationInputTests", dependencies: ["StationInput", "StationKit"]),
+        .target(name: "GangwayKit"),
+        .target(name: "GangwayInput", dependencies: ["GangwayKit"]),
+        .executableTarget(name: "gangwayctl", dependencies: ["GangwayKit", "GangwayInput"]),
+        .executableTarget(name: "GangwayApp", dependencies: ["GangwayKit", "GangwayInput"]),
+        .testTarget(name: "GangwayKitTests", dependencies: ["GangwayKit"]),
+        .testTarget(name: "GangwayInputTests", dependencies: ["GangwayInput", "GangwayKit"]),
     ]
 )

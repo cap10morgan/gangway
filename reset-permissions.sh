@@ -1,5 +1,5 @@
 #!/bin/bash
-# Clears Station's TCC entries so the next launch re-requests them from scratch.
+# Clears Gangway's TCC entries so the next launch re-requests them from scratch.
 #
 # Grants themselves cannot be scripted. tccutil only resets; there is no supported API
 # to approve a permission on the user's behalf, and writing TCC.db directly requires
@@ -11,7 +11,7 @@
 # builds. build-app.sh prefers a real certificate precisely to avoid that.
 set -uo pipefail
 
-BUNDLE_ID="${1:-com.station.Station}"
+BUNDLE_ID="${1:-com.timetraveltoaster.Gangway}"
 
 echo "Resetting TCC entries for $BUNDLE_ID"
 echo
@@ -36,11 +36,11 @@ if ! tccutil reset LocalNetwork "$BUNDLE_ID" >/dev/null 2>&1; then
 fi
 
 echo
-echo "Quit Station if it is running, then launch it with:"
-echo "    open build/Station.app"
+echo "Quit Gangway if it is running, then launch it with:"
+echo "    open build/Gangway.app"
 echo
 echo "It will re-request both permissions on launch and reappear in"
 echo "System Settings > Privacy & Security."
 echo
-echo "If peer discovery stops working, revoke Local Network for Station in"
+echo "If peer discovery stops working, revoke Local Network for Gangway in"
 echo "System Settings > Privacy & Security > Local Network and relaunch."

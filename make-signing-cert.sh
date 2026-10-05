@@ -11,7 +11,7 @@
 # This certificate cannot be used for distribution. It is for local development only.
 set -euo pipefail
 
-CERT_NAME="${STATION_CERT_NAME:-Station Development}"
+CERT_NAME="${GANGWAY_CERT_NAME:-Gangway Development}"
 KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
 
 if security find-identity -v -p codesigning | grep -q "$CERT_NAME"; then
@@ -27,7 +27,7 @@ echo "==> Generating a self-signed code-signing certificate"
 # codeSigning EKU is required or codesign will refuse the identity.
 openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
     -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
-    -subj "/CN=$CERT_NAME/O=Station/C=US" \
+    -subj "/CN=$CERT_NAME/O=Gangway/C=US" \
     -addext "basicConstraints=critical,CA:false" \
     -addext "keyUsage=critical,digitalSignature" \
     -addext "extendedKeyUsage=critical,codeSigning" 2>/dev/null
@@ -37,12 +37,12 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
 # required, not merely preferred.
 openssl pkcs12 -export -out "$WORK/identity.p12" \
     -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-    -passout pass:station \
+    -passout pass:gangway \
     -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg SHA1 2>/dev/null
 
 echo "==> Importing into the login keychain"
 # -T authorises codesign to use the key without prompting each time.
-security import "$WORK/identity.p12" -k "$KEYCHAIN" -P station \
+security import "$WORK/identity.p12" -k "$KEYCHAIN" -P gangway \
     -T /usr/bin/codesign -T /usr/bin/security >/dev/null
 
 echo "==> Trusting it for code signing"

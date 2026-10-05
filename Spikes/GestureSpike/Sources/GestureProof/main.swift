@@ -7,7 +7,7 @@ import CoreGraphics
 //
 // This process hosts the receiving view AND replays the events, so focus is guaranteed.
 
-let recordPath = ProcessInfo.processInfo.environment["STATION_CAPTURE"]
+let recordPath = ProcessInfo.processInfo.environment["GANGWAY_CAPTURE"]
     ?? "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
 
 final class ReceiverView: NSView {
@@ -53,7 +53,7 @@ app.setActivationPolicy(.regular)
 
 let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 640, height: 420),
                       styleMask: [.titled], backing: .buffered, defer: false)
-window.title = "Station gesture proof"
+window.title = "Gangway gesture proof"
 let view = ReceiverView(frame: window.contentRect(forFrameRect: window.frame))
 window.contentView = view
 window.makeKeyAndOrderFront(nil)

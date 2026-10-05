@@ -91,7 +91,7 @@ print("")
 let consumed: Set<UInt32> = [18, 19, 20, 22, 29, 30, 31, 32]
 nonisolated(unsafe) var seen: [UInt32: Int] = [:]
 nonisolated(unsafe) var recorded: [(UInt32, Data, Double)] = []
-let recordPath = ProcessInfo.processInfo.environment["STATION_CAPTURE"]
+let recordPath = ProcessInfo.processInfo.environment["GANGWAY_CAPTURE"]
     ?? "/tmp/claude-501/-Users-wmorgan-dev-station/gesture-capture.bin"
 
 func makeTap(onlyGestures: Bool, record: Bool) -> CFMachPort? {
