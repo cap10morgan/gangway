@@ -1,15 +1,28 @@
 import AppKit
 import SwiftUI
+import Sparkle
 import GangwayKit
 import GangwayInput
+
+/// Owns the updater for the life of the app.
+///
+/// `SPUStandardUpdaterController` starts checking as soon as it is created and must
+/// outlive every check, so it is held here rather than made where it is used.
+@MainActor
+final class Updater: ObservableObject {
+    let controller = SPUStandardUpdaterController(startingUpdater: true,
+                                                  updaterDelegate: nil,
+                                                  userDriverDelegate: nil)
+}
 
 @main
 struct GangwayApp: App {
     @State private var model = AppModel()
+    @StateObject private var updater = Updater()
 
     var body: some Scene {
         MenuBarExtra {
-            GangwayMenu(model: model)
+            GangwayMenu(model: model, updater: updater)
         } label: {
             Image(systemName: model.menuBarSymbol)
         }
@@ -39,6 +52,7 @@ struct GangwayApp: App {
 /// The menu bar pull-down: state and commands only.
 struct GangwayMenu: View {
     @Bindable var model: AppModel
+    @ObservedObject var updater: Updater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -65,6 +79,9 @@ struct GangwayMenu: View {
 
         if model.isRunning {
             Button("Arrange Screens…") { openWindow(id: "layout") }
+        }
+        Button("Check for Updates…") {
+            updater.controller.checkForUpdates(nil)
         }
         SettingsLink { Text("Settings…") }
             .keyboardShortcut(",", modifiers: .command)

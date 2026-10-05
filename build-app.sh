@@ -37,6 +37,21 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/GangwayApp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
+# Sparkle ships as a framework that has to live inside the bundle. SwiftPM links
+# against it where it built it, which is a path that will not exist on anyone else's
+# Mac, so copy it in and teach the executable to look beside itself.
+SPARKLE_SRC=$(find .build -type d -name "Sparkle.framework" -path "*Products*" | head -1)
+if [ -z "$SPARKLE_SRC" ]; then
+    echo "!!  Sparkle.framework not found under .build; run: swift build -c $CONFIG"
+    exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+# ditto rather than cp -R: a framework is a tree of symlinks, and copying it with the
+# links resolved produces a bundle that is valid until you try to sign it.
+ditto "$SPARKLE_SRC" "$APP/Contents/Frameworks/Sparkle.framework"
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+                  "$APP/Contents/MacOS/GangwayApp" 2>/dev/null || true
+
 if [ -n "${GANGWAY_SIGN_IDENTITY:-}" ]; then
     IDENTITY="$GANGWAY_SIGN_IDENTITY"
 elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
@@ -67,7 +82,29 @@ else
 fi
 
 echo "==> Signing as: $IDENTITY"
-codesign --force --deep --options runtime \
+
+# A secure timestamp needs Apple's timestamp server and a real certificate; a
+# self-signed one cannot use it, and asking anyway fails the whole signature.
+case "$IDENTITY" in
+    "Developer ID Application"*) TS=(--timestamp) ;;
+    *)                           TS=(--timestamp=none) ;;
+esac
+
+# Inside out, and without --deep. --deep re-signs nested code with the *outer*
+# entitlements, which is wrong for Sparkle's helpers: the installer and downloader
+# are separate programs with their own requirements, and Apple has deprecated it for
+# exactly this reason. Order matters -- a container cannot be sealed before what it
+# contains.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+for nested in "$SPARKLE/Versions/B/XPCServices/"*.xpc \
+              "$SPARKLE/Versions/B/Updater.app" \
+              "$SPARKLE/Versions/B/Autoupdate"; do
+    [ -e "$nested" ] || continue
+    codesign --force --options runtime "${TS[@]}" --sign "$IDENTITY" "$nested"
+done
+codesign --force --options runtime "${TS[@]}" --sign "$IDENTITY" "$SPARKLE"
+
+codesign --force --options runtime "${TS[@]}" \
          --entitlements Resources/Gangway.entitlements \
          --sign "$IDENTITY" "$APP"
 
