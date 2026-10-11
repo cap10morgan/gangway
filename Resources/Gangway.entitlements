@@ -3,8 +3,7 @@
 <plist version="1.0">
 <dict>
     <!-- Deliberately NOT sandboxed. App Sandbox blocks the Accessibility APIs, and
-         posting events requires them. See FINDINGS.md section 3: this is the reason
-         Station cannot ship on the Mac App Store. -->
+         posting events requires them. This is the reason Station cannot ship on the Mac App Store. -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
 

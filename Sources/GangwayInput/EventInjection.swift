@@ -4,7 +4,7 @@ import GangwayKit
 
 /// Replays forwarded input on the secondary Mac.
 ///
-/// Two non-obvious requirements, both established by measurement (FINDINGS.md):
+/// Two non-obvious requirements, both established by measurement:
 ///
 /// 1. Events are rehydrated from opaque bytes with `CGEventCreateFromData` and posted
 ///    unmodified apart from their location. We never rebuild a gesture from parsed

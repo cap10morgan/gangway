@@ -9,8 +9,7 @@ import GangwayKit
 /// remote it swallows every event so the primary does not act on input meant for the
 /// peer, and hands the raw bytes to `onEvent`.
 ///
-/// Verified by measurement: consuming does not degrade the gesture stream. See
-/// FINDINGS.md section 6.
+/// Verified by measurement: consuming does not degrade the gesture stream.
 /// Threading contract: create, start, stop and mutate on the thread that runs the
 /// run loop the tap is attached to. The tap callback fires on that same thread, so
 /// state touched by `handle` needs no locking. Callers on other queues (network
@@ -25,7 +24,7 @@ public final class EventCapture: @unchecked Sendable {
 
     /// Every event type we forward. Deliberately *not* a filtered subset: gesture
     /// events are inert on the far side without their type-29 companions, so filtering
-    /// by "interesting" type is the bug that breaks gesture support. See FINDINGS.md.
+    /// by "interesting" type is the bug that breaks gesture support.
     private static let allEvents: CGEventMask = ~0
 
     public private(set) var mode: Mode = .local

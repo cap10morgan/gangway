@@ -104,7 +104,7 @@ public enum CursorControl {
     // A hidden cursor outlives the process that hid it: after SIGKILL the pointer stays
     // invisible until something incidental (mouse movement, an app activating) restores
     // it, and `CGDisplayShowCursor` from a different process does not clear it.
-    // Measured directly, see FINDINGS.md section 8.
+    // Measured directly.
     //
     // So every exit path we *can* intercept must unhide first. SIGKILL cannot be
     // caught; that residual case is documented rather than solved.
