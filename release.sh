@@ -42,6 +42,15 @@ OLD_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$P
 OLD_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")
 BUILD_NUMBER=$(( OLD_BUILD + 1 ))
 echo "==> Version $VERSION (build $BUILD_NUMBER)"
+# Put back the two fields this script changes, and only those. Restoring the whole
+# file from git would also discard any uncommitted edit to it -- which is exactly
+# what the first dry run did to the Sparkle keys. Armed until the release commit, so
+# a failed build does not leave the bump behind either.
+restore_version() {
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $OLD_VERSION" "$PLIST"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $OLD_BUILD" "$PLIST"
+}
+trap restore_version EXIT
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
 
@@ -78,17 +87,13 @@ if [ "$DRY_RUN" = true ]; then
     echo "Dry run: nothing committed, tagged, pushed or published."
     echo "Built    $ZIP"
     echo "Feed     appcast.xml"
-    # Put back the two fields this script changed, and only those. Restoring the
-    # whole file from git would also discard any uncommitted edit to it -- which is
-    # exactly what the first dry run did to the Sparkle keys.
-    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $OLD_VERSION" "$PLIST"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $OLD_BUILD" "$PLIST"
     exit 0
 fi
 
 echo "==> Committing, tagging and publishing"
 git add "$PLIST" appcast.xml
 git commit -m "Release v$VERSION"
+trap - EXIT
 git tag "v$VERSION"
 git push origin HEAD "v$VERSION"
 
