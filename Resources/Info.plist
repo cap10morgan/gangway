@@ -6,6 +6,8 @@
 	<string>Gangway</string>
 	<key>CFBundleExecutable</key>
 	<string>GangwayApp</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.timetraveltoaster.Gangway</string>
 	<key>CFBundleName</key>

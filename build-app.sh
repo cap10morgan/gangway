@@ -36,6 +36,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/GangwayApp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# Drawn by make-icon.swift; rerun that to change it.
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Sparkle ships as a framework that has to live inside the bundle. SwiftPM links
 # against it where it built it, which is a path that will not exist on anyone else's
