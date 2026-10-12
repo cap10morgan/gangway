@@ -16,17 +16,34 @@ public enum LoginItem {
         /// let the app override that, so the UI has to send them there rather than
         /// silently failing to enable.
         case requiresApproval
-        /// The bundle is somewhere macOS will not register, typically because it is
-        /// still in a build directory or on a disk image.
+        /// A status this version of Gangway does not know.
         case unavailable(String)
+        /// macOS is running a temporary copy of the bundle instead of the one the user
+        /// installed. It does this to a downloaded app that still carries its
+        /// quarantine flag and was not moved into place with Finder, and the copy lives
+        /// at a random read-only path that cannot be registered -- or updated. Being in
+        /// the Applications folder does not help; the flag has to go.
+        case translocated
+    }
+
+    /// Whether this process was launched from an App Translocation copy.
+    public static var isTranslocated: Bool {
+        Bundle.main.bundlePath.contains("/AppTranslocation/")
     }
 
     public static var state: State {
+        // Checked first: a translocated app reports `.notFound`, which reads as "not in
+        // Applications" and sends the user to fix the one thing that is already right.
+        if isTranslocated { return .translocated }
         switch SMAppService.mainApp.status {
         case .enabled:          return .enabled
-        case .notRegistered:    return .disabled
+        // `.notFound` is what macOS reports for an app that has never been registered,
+        // wherever it is installed: measured on macOS 27 with a fresh bundle in
+        // /Applications, where `register()` then succeeded and the status became
+        // `.enabled`. Treating it as "wrong location" disabled the switch, so the one
+        // call that would have cleared it could never be made.
+        case .notRegistered, .notFound: return .disabled
         case .requiresApproval: return .requiresApproval
-        case .notFound:         return .unavailable("Gangway is not in a location macOS can launch from.")
         @unknown default:       return .unavailable("Unknown login item status.")
         }
     }
@@ -52,7 +69,8 @@ public enum LoginItem {
                 guard SMAppService.mainApp.status != .enabled else { return }
                 try SMAppService.mainApp.register()
             } else {
-                guard SMAppService.mainApp.status != .notRegistered else { return }
+                let status = SMAppService.mainApp.status
+                guard status != .notRegistered, status != .notFound else { return }
                 try SMAppService.mainApp.unregister()
             }
         } catch {

@@ -111,7 +111,7 @@ struct GangwayMenu: View {
     private var loginItemIsToggleable: Bool {
         switch model.loginItemState {
         case .enabled, .disabled: return true
-        case .requiresApproval, .unavailable: return false
+        case .requiresApproval, .unavailable, .translocated: return false
         }
     }
 

@@ -61,10 +61,22 @@ struct GeneralSettings: View {
                           systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                     Button("Open Login Items…") { model.openLoginItemsSettings() }
-                case .unavailable:
-                    // Almost always because the app is still in a build directory.
-                    Text("Start at login needs Gangway in your Applications folder.")
-                    Text("Move Gangway.app there, then reopen it.")
+                case .translocated:
+                    Label("macOS is running Gangway from a temporary copy",
+                          systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text("This happens to a downloaded app until macOS has cleared it, "
+                         + "even in the Applications folder. Start at login and updates "
+                         + "do not work until it is fixed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("**How to fix:** Quit Gangway, drag Gangway.app out of "
+                         + "Applications and back in using Finder, then reopen it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .unavailable(let reason):
+                    Text("Start at login is not available.")
+                    Text(reason)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
