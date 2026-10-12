@@ -3,6 +3,15 @@
     <channel>
         <title>Gangway</title>
         <item>
+            <title>0.1.2</title>
+            <pubDate>Mon, 12 Oct 2026 09:48:55 -0600</pubDate>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/cap10morgan/gangway/releases/download/v0.1.2/Gangway-0.1.2.zip" length="2127117" type="application/octet-stream" sparkle:edSignature="VEuUC4od3d8ie26EAfEp4xlPWHMUXazifb1n1m4DOVFucdyblpG6lQN19ZIOSqaDKg9EJzwNy0jCY9y6P4eyDQ=="/>
+        </item>
+        <item>
             <title>0.1.1</title>
             <pubDate>Sun, 11 Oct 2026 11:54:30 -0600</pubDate>
             <sparkle:version>3</sparkle:version>
